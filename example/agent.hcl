@@ -5,6 +5,6 @@ log_level = "TRACE"
 
 plugin "hello-driver" {
   config {
-    shell = "bash"
+    cloud-hypervisor-binary-path = "/usr/bin/cloud-hypervisor"
   }
 }
