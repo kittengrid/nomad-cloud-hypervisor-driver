@@ -6,6 +6,6 @@ log_level = "TRACE"
 plugin "cloud-hypervisor-driver" {
   config {
     cloud-hypervisor-binary-path = "/usr/bin/cloud-hypervisor"
-    cloud-hypervisor-socket = "/tmp/ch.sock"
+    cloud-hypervisor-socket-dir = "/tmp/nomad-ch"
   }
 }
