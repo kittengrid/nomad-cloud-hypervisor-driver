@@ -3,8 +3,9 @@
 
 log_level = "TRACE"
 
-plugin "hello-driver" {
+plugin "cloud-hypervisor-driver" {
   config {
     cloud-hypervisor-binary-path = "/usr/bin/cloud-hypervisor"
+    cloud-hypervisor-socket = "/tmp/ch.sock"
   }
 }

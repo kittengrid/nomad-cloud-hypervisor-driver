@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"syscall"
 	"time"
 
 	"github.com/hashicorp/consul-template/signals"
@@ -66,7 +67,7 @@ var (
 		//
 		// For example, for the schema below a valid configuration would be:
 		//
-		//   plugin "hello-driver-plugin" {
+		//   plugin "cloud-hypervisor" {
 		//     config {
 		//       shell = "fish"
 		//     }
@@ -74,6 +75,10 @@ var (
 		"cloud-hypervisor-binary-path": hclspec.NewDefault(
 			hclspec.NewAttr("cloud-hypervisor-binary-path", "string", false),
 			hclspec.NewLiteral(`"/usr/bin/cloud-hypervisor"`),
+		),
+		"cloud-hypervisor-socket": hclspec.NewDefault(
+			hclspec.NewAttr("cloud-hypervisor-socket", "string", false),
+			hclspec.NewLiteral(`"/run/nomad-ch-driver/cloud-hypervisor.sock"`),
 		),
 	})
 
@@ -92,7 +97,7 @@ var (
 		//   job "example" {
 		//     group "example" {
 		//       task "say-hi" {
-		//         driver = "hello-driver-plugin"
+		//         driver = "cloud-hypervisor"
 		//         config {
 		//           greeting = "Hi"
 		//         }
@@ -126,6 +131,7 @@ type Config struct {
 	// configSpec variable above. It's used to convert the HCL configuration
 	// passed by the Nomad agent into Go contructs.
 	CloudHypervisorBinaryPath string `codec:"cloud-hypervisor-binary-path"`
+	CloudHypervisorSocket     string `codec:"cloud-hypervisor-socket"`
 }
 
 // TaskConfig contains configuration information for a task that runs with
@@ -159,9 +165,9 @@ type TaskState struct {
 	Pid int
 }
 
-// HelloDriverPlugin is an example driver plugin. When provisioned in a job,
+// CloudHypervisorDriverPlugin is an example driver plugin. When provisioned in a job,
 // the taks will output a greet specified by the user.
-type HelloDriverPlugin struct {
+type CloudHypervisorDriverPlugin struct {
 	// eventer is used to handle multiplexing of TaskEvents calls such that an
 	// event can be broadcast to all callers
 	eventer *eventer.Eventer
@@ -185,14 +191,18 @@ type HelloDriverPlugin struct {
 
 	// logger will log to the Nomad agent
 	logger hclog.Logger
+
+	cmd *exec.Cmd
+
+	ch_client *CloudHypervisorClient
 }
 
-// NewPlugin returns a new example driver plugin
+// NewPlugin returns a new cloud-hypervisor driver plugin
 func NewPlugin(logger hclog.Logger) drivers.DriverPlugin {
 	ctx, cancel := context.WithCancel(context.Background())
 	logger = logger.Named(pluginName)
 
-	return &HelloDriverPlugin{
+	return &CloudHypervisorDriverPlugin{
 		eventer:        eventer.NewEventer(ctx, logger),
 		config:         &Config{},
 		tasks:          newTaskStore(),
@@ -203,17 +213,73 @@ func NewPlugin(logger hclog.Logger) drivers.DriverPlugin {
 }
 
 // PluginInfo returns information describing the plugin.
-func (d *HelloDriverPlugin) PluginInfo() (*base.PluginInfoResponse, error) {
+func (d *CloudHypervisorDriverPlugin) PluginInfo() (*base.PluginInfoResponse, error) {
 	return pluginInfo, nil
 }
 
 // ConfigSchema returns the plugin configuration schema.
-func (d *HelloDriverPlugin) ConfigSchema() (*hclspec.Spec, error) {
+func (d *CloudHypervisorDriverPlugin) ConfigSchema() (*hclspec.Spec, error) {
 	return configSpec, nil
 }
 
+func (d *CloudHypervisorDriverPlugin) startCloudHypervisor(ctx context.Context) (*exec.Cmd, context.CancelFunc, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	bin := d.config.CloudHypervisorBinaryPath
+	sock := d.config.CloudHypervisorSocket
+
+	if bin == "" {
+		return nil, nil, fmt.Errorf("cloud-hypervisor binary path is empty")
+	}
+	if sock == "" {
+		return nil, nil, fmt.Errorf("cloud-hypervisor socket path is empty")
+	}
+
+	// Ensure parent directory exists.
+	if err := os.MkdirAll(filepath.Dir(sock), 0o755); err != nil {
+		return nil, nil, fmt.Errorf("create socket dir: %w", err)
+	}
+
+	// Remove stale socket from a previous crash/restart.
+	_ = os.Remove(sock)
+
+	args := []string{
+		"--api-socket", "path=" + sock,
+	}
+
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
+
+	cmd.Stdout = d.logger.StandardWriter(&hclog.StandardLoggerOptions{
+		ForceLevel: hclog.Info,
+	})
+
+	cmd.Stderr = d.logger.StandardWriter(&hclog.StandardLoggerOptions{
+		ForceLevel: hclog.Error,
+	})
+	cmd.Stdin = nil
+
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return nil, nil, fmt.Errorf("start cloud-hypervisor: %w", err)
+	}
+
+	// Reap the child when it exits so it does not become a zombie.
+	go func() {
+		err := cmd.Wait()
+		if err != nil {
+			d.logger.Error("cloud-hypervisor exited", "error", err)
+		} else {
+			d.logger.Info("cloud-hypervisor exited cleanly")
+		}
+	}()
+
+	return cmd, cancel, nil
+}
+
 // SetConfig is called by the client to pass the configuration for the plugin.
-func (d *HelloDriverPlugin) SetConfig(cfg *base.Config) error {
+func (d *CloudHypervisorDriverPlugin) SetConfig(cfg *base.Config) error {
 	var config Config
 	if len(cfg.PluginConfig) != 0 {
 		if err := base.MsgPackDecode(cfg.PluginConfig, &config); err != nil {
@@ -223,60 +289,41 @@ func (d *HelloDriverPlugin) SetConfig(cfg *base.Config) error {
 
 	// Save the configuration to the plugin
 	d.config = &config
-
-	// TODO: parse and validated any configuration value if necessary.
-	//
-	// If your driver agent configuration requires any complex validation
-	// (some dependency between attributes) or special data parsing (the
-	// string "10s" into a time.Interval) you can do it here and update the
-	// value in d.config.
-	//
-	// In the example below we check if the binary specified by the user is
-	// supported by the plugin.
 	binary := d.config.CloudHypervisorBinaryPath
 	// We check that the binary path exists and it is executable, using go fileutils for stat
 	info, err := os.Stat(binary)
 	if err != nil {
 		return fmt.Errorf("binary %s not found: %v", binary, err)
 	}
+
 	// We check if it is executable by checking the executable bit in the file mode
 	if info.Mode()&0111 == 0 {
 		return fmt.Errorf("binary %s is not executable", binary)
 	}
 
-	// Save the Nomad agent configuration
-	if cfg.AgentConfig != nil {
-		d.nomadConfig = cfg.AgentConfig.Driver
-	}
-
-	// TODO: initialize any extra requirements if necessary.
-	//
-	// Here you can use the config values to initialize any resources that are
-	// shared by all tasks that use this driver, such as a daemon process.
-
 	return nil
 }
 
 // TaskConfigSchema returns the HCL schema for the configuration of a task.
-func (d *HelloDriverPlugin) TaskConfigSchema() (*hclspec.Spec, error) {
+func (d *CloudHypervisorDriverPlugin) TaskConfigSchema() (*hclspec.Spec, error) {
 	return taskConfigSpec, nil
 }
 
 // Capabilities returns the features supported by the driver.
-func (d *HelloDriverPlugin) Capabilities() (*drivers.Capabilities, error) {
+func (d *CloudHypervisorDriverPlugin) Capabilities() (*drivers.Capabilities, error) {
 	return capabilities, nil
 }
 
 // Fingerprint returns a channel that will be used to send health information
 // and other driver specific node attributes.
-func (d *HelloDriverPlugin) Fingerprint(ctx context.Context) (<-chan *drivers.Fingerprint, error) {
+func (d *CloudHypervisorDriverPlugin) Fingerprint(ctx context.Context) (<-chan *drivers.Fingerprint, error) {
 	ch := make(chan *drivers.Fingerprint)
 	go d.handleFingerprint(ctx, ch)
 	return ch, nil
 }
 
 // handleFingerprint manages the channel and the flow of fingerprint data.
-func (d *HelloDriverPlugin) handleFingerprint(ctx context.Context, ch chan<- *drivers.Fingerprint) {
+func (d *CloudHypervisorDriverPlugin) handleFingerprint(ctx context.Context, ch chan<- *drivers.Fingerprint) {
 	defer close(ch)
 
 	// Nomad expects the initial fingerprint to be sent immediately
@@ -297,29 +344,13 @@ func (d *HelloDriverPlugin) handleFingerprint(ctx context.Context, ch chan<- *dr
 }
 
 // buildFingerprint returns the driver's fingerprint data
-func (d *HelloDriverPlugin) buildFingerprint() *drivers.Fingerprint {
+func (d *CloudHypervisorDriverPlugin) buildFingerprint() *drivers.Fingerprint {
 	fp := &drivers.Fingerprint{
 		Attributes:        map[string]*structs.Attribute{},
 		Health:            drivers.HealthStateHealthy,
 		HealthDescription: drivers.DriverHealthy,
 	}
 
-	// TODO: implement fingerprinting logic to populate health and driver
-	// attributes.
-	//
-	// Fingerprinting is used by the plugin to relay two important information
-	// to Nomad: health state and node attributes.
-	//
-	// If the plugin reports to be unhealthy, or doesn't send any fingerprint
-	// data in the expected interval of time, Nomad will restart it.
-	//
-	// Node attributes can be used to report any relevant information about
-	// the node in which the plugin is running (specific library availability,
-	// installed versions of a software etc.). These attributes can then be
-	// used by an operator to set job constrains.
-	//
-	// In the example below we check if the shell specified by the user exists
-	// in the node.
 	binary := d.config.CloudHypervisorBinaryPath
 
 	cmd := exec.Command("which", binary)
@@ -330,23 +361,33 @@ func (d *HelloDriverPlugin) buildFingerprint() *drivers.Fingerprint {
 		}
 	}
 
-	// We also set the shell and its version as attributes
+	// We just run the cloud hypervisor and regexp the version
 	cmd = exec.Command(binary, "--version")
-	if out, err := cmd.Output(); err != nil {
-		d.logger.Warn("failed to find cloud-hypervisor version: %v", err)
-	} else {
-		re := regexp.MustCompile("/([0-9]+\\.[0-9]+\\.[0-9]+)/")
-		version := re.FindString(string(out))
 
-		fp.Attributes["driver.hello.cloud-hypervisor_version"] = structs.NewStringAttribute(version)
-		fp.Attributes["driver.hello.cloud-hypervisor_path"] = structs.NewStringAttribute(binary)
+	output, err := cmd.Output()
+	if err != nil {
+		return &drivers.Fingerprint{
+			Health:            drivers.HealthStateUnhealthy,
+			HealthDescription: fmt.Sprintf("cloud-hypervisor binary at path %s is not executable: %v", binary, err),
+		}
 	}
+	// \d+\.\d+\.\d+
+	date := regexp.MustCompile(`\d+\.\d+\.\d+`).FindString(string(output))
+	if date == "" {
+		return &drivers.Fingerprint{
+			Health:            drivers.HealthStateUnhealthy,
+			HealthDescription: fmt.Sprintf("cloud-hypervisor binary at path %s did not return a version string", binary),
+		}
+	}
+
+	fp.Attributes["driver.cloud-hypervisor.cloud-hypervisor_version"] = structs.NewStringAttribute(date)
+	fp.Attributes["driver.cloud-hypervisor.cloud-hypervisor_path"] = structs.NewStringAttribute(binary)
 
 	return fp
 }
 
 // StartTask returns a task handle and a driver network if necessary.
-func (d *HelloDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drivers.DriverNetwork, error) {
+func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drivers.DriverNetwork, error) {
 	if _, ok := d.tasks.Get(cfg.ID); ok {
 		return nil, nil, fmt.Errorf("task with ID %q already started", cfg.ID)
 	}
@@ -435,7 +476,7 @@ func (d *HelloDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHan
 }
 
 // RecoverTask recreates the in-memory state of a task from a TaskHandle.
-func (d *HelloDriverPlugin) RecoverTask(handle *drivers.TaskHandle) error {
+func (d *CloudHypervisorDriverPlugin) RecoverTask(handle *drivers.TaskHandle) error {
 	if handle == nil {
 		return errors.New("error: handle cannot be nil")
 	}
@@ -488,7 +529,7 @@ func (d *HelloDriverPlugin) RecoverTask(handle *drivers.TaskHandle) error {
 }
 
 // WaitTask returns a channel used to notify Nomad when a task exits.
-func (d *HelloDriverPlugin) WaitTask(ctx context.Context, taskID string) (<-chan *drivers.ExitResult, error) {
+func (d *CloudHypervisorDriverPlugin) WaitTask(ctx context.Context, taskID string) (<-chan *drivers.ExitResult, error) {
 	handle, ok := d.tasks.Get(taskID)
 	if !ok {
 		return nil, drivers.ErrTaskNotFound
@@ -499,7 +540,7 @@ func (d *HelloDriverPlugin) WaitTask(ctx context.Context, taskID string) (<-chan
 	return ch, nil
 }
 
-func (d *HelloDriverPlugin) handleWait(ctx context.Context, handle *taskHandle, ch chan *drivers.ExitResult) {
+func (d *CloudHypervisorDriverPlugin) handleWait(ctx context.Context, handle *taskHandle, ch chan *drivers.ExitResult) {
 	defer close(ch)
 	var result *drivers.ExitResult
 
@@ -537,7 +578,7 @@ func (d *HelloDriverPlugin) handleWait(ctx context.Context, handle *taskHandle, 
 }
 
 // StopTask stops a running task with the given signal and within the timeout window.
-func (d *HelloDriverPlugin) StopTask(taskID string, timeout time.Duration, signal string) error {
+func (d *CloudHypervisorDriverPlugin) StopTask(taskID string, timeout time.Duration, signal string) error {
 	handle, ok := d.tasks.Get(taskID)
 	if !ok {
 		return drivers.ErrTaskNotFound
@@ -563,7 +604,7 @@ func (d *HelloDriverPlugin) StopTask(taskID string, timeout time.Duration, signa
 }
 
 // DestroyTask cleans up and removes a task that has terminated.
-func (d *HelloDriverPlugin) DestroyTask(taskID string, force bool) error {
+func (d *CloudHypervisorDriverPlugin) DestroyTask(taskID string, force bool) error {
 	handle, ok := d.tasks.Get(taskID)
 	if !ok {
 		return drivers.ErrTaskNotFound
@@ -594,7 +635,7 @@ func (d *HelloDriverPlugin) DestroyTask(taskID string, force bool) error {
 }
 
 // InspectTask returns detailed status information for the referenced taskID.
-func (d *HelloDriverPlugin) InspectTask(taskID string) (*drivers.TaskStatus, error) {
+func (d *CloudHypervisorDriverPlugin) InspectTask(taskID string) (*drivers.TaskStatus, error) {
 	handle, ok := d.tasks.Get(taskID)
 	if !ok {
 		return nil, drivers.ErrTaskNotFound
@@ -604,7 +645,7 @@ func (d *HelloDriverPlugin) InspectTask(taskID string) (*drivers.TaskStatus, err
 }
 
 // TaskStats returns a channel which the driver should send stats to at the given interval.
-func (d *HelloDriverPlugin) TaskStats(ctx context.Context, taskID string, interval time.Duration) (<-chan *drivers.TaskResourceUsage, error) {
+func (d *CloudHypervisorDriverPlugin) TaskStats(ctx context.Context, taskID string, interval time.Duration) (<-chan *drivers.TaskResourceUsage, error) {
 	handle, ok := d.tasks.Get(taskID)
 	if !ok {
 		return nil, drivers.ErrTaskNotFound
@@ -622,13 +663,13 @@ func (d *HelloDriverPlugin) TaskStats(ctx context.Context, taskID string, interv
 }
 
 // TaskEvents returns a channel that the plugin can use to emit task related events.
-func (d *HelloDriverPlugin) TaskEvents(ctx context.Context) (<-chan *drivers.TaskEvent, error) {
+func (d *CloudHypervisorDriverPlugin) TaskEvents(ctx context.Context) (<-chan *drivers.TaskEvent, error) {
 	return d.eventer.TaskEvents(ctx)
 }
 
 // SignalTask forwards a signal to a task.
 // This is an optional capability.
-func (d *HelloDriverPlugin) SignalTask(taskID string, signal string) error {
+func (d *CloudHypervisorDriverPlugin) SignalTask(taskID string, signal string) error {
 	handle, ok := d.tasks.Get(taskID)
 	if !ok {
 		return drivers.ErrTaskNotFound
@@ -651,7 +692,7 @@ func (d *HelloDriverPlugin) SignalTask(taskID string, signal string) error {
 
 // ExecTask returns the result of executing the given command inside a task.
 // This is an optional capability.
-func (d *HelloDriverPlugin) ExecTask(taskID string, cmd []string, timeout time.Duration) (*drivers.ExecTaskResult, error) {
+func (d *CloudHypervisorDriverPlugin) ExecTask(taskID string, cmd []string, timeout time.Duration) (*drivers.ExecTaskResult, error) {
 	// TODO: implement driver specific logic to execute commands in a task.
 	return nil, errors.New("This driver does not support exec")
 }
