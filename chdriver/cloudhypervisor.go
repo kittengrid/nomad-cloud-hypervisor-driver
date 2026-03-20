@@ -59,8 +59,6 @@ func startCloudHypervisor(
 		return nil, fmt.Errorf("start cloud-hypervisor: %w", err)
 	}
 
-	// Reap the child in the background so it does not become a zombie when
-	// the driver is still alive. If the driver dies first, init takes over.
 	go func() {
 		_ = cmd.Wait()
 		stdout.Close()
