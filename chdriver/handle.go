@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/go-plugin"
+	"github.com/hashicorp/nomad/drivers/shared/executor"
 	"github.com/hashicorp/nomad/plugins/drivers"
 )
 
@@ -18,17 +20,21 @@ type taskHandle struct {
 	// stateLock syncs access to all fields below
 	stateLock sync.RWMutex
 
-	logger     hclog.Logger
-	pid        int
-	socketPath string
-	taskConfig *drivers.TaskConfig
-	procState  drivers.TaskState
-	startedAt  time.Time
+	logger      hclog.Logger
+	pid         int
+	socketPath  string
+	taskConfig  *drivers.TaskConfig
+	procState   drivers.TaskState
+	startedAt   time.Time
 	completedAt time.Time
 	exitResult  *drivers.ExitResult
 
 	// doneCh is closed when the process exits, unblocking WaitTask callers.
-	doneCh chan struct{}
+	doneCh       chan struct{}
+	client       *CloudHypervisorClient
+	pluginClient plugin.Client
+	exec         executor.Executor
+	driverConfig TaskConfig
 }
 
 func (h *taskHandle) TaskStatus() *drivers.TaskStatus {

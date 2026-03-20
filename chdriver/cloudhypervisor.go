@@ -6,9 +6,9 @@ package chdriver
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"syscall"
+
+	"github.com/hashicorp/nomad/drivers/shared/executor"
 )
 
 // CloudHypervisorProcess holds the identifiers needed to track a running
@@ -16,6 +16,7 @@ import (
 type CloudHypervisorProcess struct {
 	Pid        int
 	SocketPath string
+	exec       executor.Executor
 }
 
 // startCloudHypervisor launches cloud-hypervisor as an independent process.
@@ -26,6 +27,7 @@ func startCloudHypervisor(
 	binaryPath, socketDir, taskID string,
 	stdoutPath, stderrPath string,
 	cfg TaskConfig,
+	exec executor.Executor,
 ) (*CloudHypervisorProcess, error) {
 	socketPath := filepath.Join(socketDir, filepath.Base(taskID)+".sock")
 
@@ -36,38 +38,22 @@ func startCloudHypervisor(
 	// Remove any stale socket left by a previous crash.
 	_ = os.Remove(socketPath)
 
-	stdout, err := os.OpenFile(stdoutPath, os.O_WRONLY, 0)
+	execCmd := &executor.ExecCommand{
+		Cmd:        binaryPath,
+		Args:       buildCHArgs(cfg, socketPath),
+		StdoutPath: stdoutPath,
+		StderrPath: stderrPath,
+	}
+
+	ps, err := exec.Launch(execCmd)
 	if err != nil {
-		return nil, fmt.Errorf("open stdout path: %w", err)
+		return nil, fmt.Errorf("launch cloud-hypervisor: %w", err)
 	}
-
-	stderr, err := os.OpenFile(stderrPath, os.O_WRONLY, 0)
-	if err != nil {
-		stdout.Close()
-		return nil, fmt.Errorf("open stderr path: %w", err)
-	}
-
-	cmd := exec.Command(binaryPath, buildCHArgs(cfg, socketPath)...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	cmd.Stdin = nil
-
-	if err := cmd.Start(); err != nil {
-		stdout.Close()
-		stderr.Close()
-		return nil, fmt.Errorf("start cloud-hypervisor: %w", err)
-	}
-
-	go func() {
-		_ = cmd.Wait()
-		stdout.Close()
-		stderr.Close()
-	}()
 
 	return &CloudHypervisorProcess{
-		Pid:        cmd.Process.Pid,
+		Pid:        ps.Pid,
 		SocketPath: socketPath,
+		exec:       exec,
 	}, nil
 }
 

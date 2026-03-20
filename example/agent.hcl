@@ -16,3 +16,7 @@ plugin "cloud-hypervisor-driver" {
     cloud-hypervisor-socket-dir  = "/tmp/nomad-ch"
   }
 }
+telemetry {
+  publish_allocation_metrics = true
+  publish_node_metrics       = true
+}

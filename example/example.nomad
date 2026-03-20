@@ -9,6 +9,10 @@ job "example" {
     task "hello-world" {
       driver = "cloud-hypervisor"
 
+      resources {
+        memory = 1073
+      }
+
       config {
         payload {
           kernel = "/home/jose/projects/kittengrid/ch-tests/hypervisor-fw"

@@ -7,8 +7,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"syscall"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/hashicorp/consul-template/signals"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/nomad/drivers/shared/eventer"
+	"github.com/hashicorp/nomad/drivers/shared/executor"
 	"github.com/hashicorp/nomad/plugins/base"
 	"github.com/hashicorp/nomad/plugins/drivers"
 	"github.com/hashicorp/nomad/plugins/shared/hclspec"
@@ -208,8 +211,6 @@ type CloudHypervisorDriverPlugin struct {
 	logger hclog.Logger
 
 	cmd *exec.Cmd
-
-	ch_client *CloudHypervisorClient
 }
 
 // NewPlugin returns a new cloud-hypervisor driver plugin
@@ -363,6 +364,19 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 	handle := drivers.NewTaskHandle(taskHandleVersion)
 	handle.Config = cfg
 
+	pluginLogFile := filepath.Join(cfg.TaskDir().Dir, "executor.out")
+	executorConfig := &executor.ExecutorConfig{
+		LogFile:  pluginLogFile,
+		LogLevel: "debug",
+	}
+	logger := d.logger.With("task_name", handle.Config.Name, "alloc_id", handle.Config.AllocID)
+
+	exec, pluginClient, err := executor.CreateExecutor(logger, d.nomadConfig, executorConfig)
+
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create executor: %v", err)
+	}
+
 	proc, err := startCloudHypervisor(
 		d.config.CloudHypervisorBinaryPath,
 		d.config.CloudHypervisorSocketDir,
@@ -370,19 +384,24 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 		cfg.StdoutPath,
 		cfg.StderrPath,
 		driverConfig,
+		exec,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to start cloud-hypervisor: %v", err)
 	}
 
 	h := &taskHandle{
-		pid:        proc.Pid,
-		socketPath: proc.SocketPath,
-		taskConfig: cfg,
-		procState:  drivers.TaskStateRunning,
-		startedAt:  time.Now().Round(time.Millisecond),
-		logger:     d.logger,
-		doneCh:     make(chan struct{}),
+		pid:          proc.Pid,
+		exec:         proc.exec,
+		pluginClient: *pluginClient,
+		socketPath:   proc.SocketPath,
+		taskConfig:   cfg,
+		procState:    drivers.TaskStateRunning,
+		startedAt:    time.Now().Round(time.Millisecond),
+		logger:       d.logger,
+		doneCh:       make(chan struct{}),
+		client:       NewCloudHypervisorClient(NewCloudHypervisorClientConfig(proc.SocketPath), d.logger),
+		driverConfig: driverConfig,
 	}
 
 	driverState := TaskState{
@@ -523,17 +542,96 @@ func (d *CloudHypervisorDriverPlugin) InspectTask(taskID string) (*drivers.TaskS
 }
 
 // TaskStats returns a channel which the driver should send stats to at the given interval.
-func (d *CloudHypervisorDriverPlugin) TaskStats(ctx context.Context, taskID string, interval time.Duration) (<-chan *drivers.TaskResourceUsage, error) {
+func (d *CloudHypervisorDriverPlugin) TaskStats(
+	ctx context.Context,
+	taskID string,
+	interval time.Duration,
+) (<-chan *drivers.TaskResourceUsage, error) {
 	handle, ok := d.tasks.Get(taskID)
 	if !ok {
 		return nil, drivers.ErrTaskNotFound
 	}
 
-	// VM resource stats are not yet implemented; return an empty channel.
-	_ = handle
-	ch := make(chan *drivers.TaskResourceUsage)
-	close(ch)
-	return ch, nil
+	in, err := handle.exec.Stats(ctx, interval)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(chan *drivers.TaskResourceUsage)
+
+	go func() {
+		defer close(out)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case usage, ok := <-in:
+				if !ok {
+					return
+				}
+				info, err := handle.client.GetVMInfo(ctx)
+				if err == nil {
+					usageStats := drivers.MemoryStats{
+						Usage:    u64FromI64(info.MemoryActualSize),
+						Measured: []string{"Usage"},
+					}
+					memoryMax := drivers.MemoryStats{
+						MaxUsage: uint64(handle.driverConfig.Memory.Size),
+						Measured: []string{"MaxUsage"},
+					}
+					usage.ResourceUsage.MemoryStats.Add(&usageStats)
+					usage.ResourceUsage.MemoryStats.Add(&memoryMax)
+					d.logger.Debug("Actual memory usage", "usage", usage.ResourceUsage.MemoryStats.Usage)
+				}
+				sanitizeTaskResourceUsage(usage)
+
+				out <- usage
+			}
+		}
+	}()
+
+	return out, nil
+}
+
+func u64FromI64(ptr *int64) uint64 {
+	if ptr == nil {
+		return 0
+	}
+	if *ptr < 0 {
+		return 0 // guard against invalid negative values
+	}
+	return uint64(*ptr)
+}
+
+func sanitizeTaskResourceUsage(u *drivers.TaskResourceUsage) {
+	if u == nil {
+		return
+	}
+
+	sanitizeResourceUsage(u.ResourceUsage)
+
+	for _, pidUsage := range u.Pids {
+		sanitizeResourceUsage(pidUsage)
+	}
+}
+
+func sanitizeResourceUsage(r *drivers.ResourceUsage) {
+	if r == nil || r.CpuStats == nil {
+		return
+	}
+
+	r.CpuStats.SystemMode = finite(r.CpuStats.SystemMode)
+	r.CpuStats.UserMode = finite(r.CpuStats.UserMode)
+	r.CpuStats.TotalTicks = finite(r.CpuStats.TotalTicks)
+	r.CpuStats.Percent = finite(r.CpuStats.Percent)
+}
+
+func finite(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	return v
 }
 
 // TaskEvents returns a channel that the plugin can use to emit task related events.
