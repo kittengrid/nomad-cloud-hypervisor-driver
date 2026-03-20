@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"syscall"
 	"time"
@@ -17,7 +16,6 @@ import (
 	"github.com/hashicorp/consul-template/signals"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/nomad/drivers/shared/eventer"
-	"github.com/hashicorp/nomad/drivers/shared/executor"
 	"github.com/hashicorp/nomad/plugins/base"
 	"github.com/hashicorp/nomad/plugins/drivers"
 	"github.com/hashicorp/nomad/plugins/shared/hclspec"
@@ -76,9 +74,9 @@ var (
 			hclspec.NewAttr("cloud-hypervisor-binary-path", "string", false),
 			hclspec.NewLiteral(`"/usr/bin/cloud-hypervisor"`),
 		),
-		"cloud-hypervisor-socket": hclspec.NewDefault(
-			hclspec.NewAttr("cloud-hypervisor-socket", "string", false),
-			hclspec.NewLiteral(`"/run/nomad-ch-driver/cloud-hypervisor.sock"`),
+		"cloud-hypervisor-socket-dir": hclspec.NewDefault(
+			hclspec.NewAttr("cloud-hypervisor-socket-dir", "string", false),
+			hclspec.NewLiteral(`"/run/nomad-ch-driver"`),
 		),
 	})
 
@@ -87,27 +85,26 @@ var (
 	// this is used to validated the configuration specified for the plugin
 	// when a job is submitted.
 	taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
-		// TODO: define plugin's task configuration schema
-		//
-		// The schema should be defined using HCL specs and it will be used to
-		// validate the task configuration provided by the user when they
-		// submit a job.
-		//
-		// For example, for the schema below a valid task would be:
-		//   job "example" {
-		//     group "example" {
-		//       task "say-hi" {
-		//         driver = "cloud-hypervisor"
-		//         config {
-		//           greeting = "Hi"
-		//         }
-		//       }
-		//     }
-		//   }
-		"greeting": hclspec.NewDefault(
-			hclspec.NewAttr("greeting", "string", false),
-			hclspec.NewLiteral(`"Hello, World!"`),
-		),
+		"payload": hclspec.NewBlock("payload", true, hclspec.NewObject(map[string]*hclspec.Spec{
+			"kernel": hclspec.NewAttr("kernel", "string", true),
+		})),
+		"disk": hclspec.NewBlockList("disk", hclspec.NewObject(map[string]*hclspec.Spec{
+			"path":       hclspec.NewAttr("path", "string", true),
+			"image_type": hclspec.NewAttr("image_type", "string", false),
+		})),
+		"cpus": hclspec.NewBlock("cpus", true, hclspec.NewObject(map[string]*hclspec.Spec{
+			"boot_vcpus": hclspec.NewAttr("boot_vcpus", "number", true),
+			"max_vcpus":  hclspec.NewAttr("max_vcpus", "number", true),
+		})),
+		"memory": hclspec.NewBlock("memory", true, hclspec.NewObject(map[string]*hclspec.Spec{
+			"size": hclspec.NewAttr("size", "number", true),
+		})),
+		"serial": hclspec.NewBlock("serial", true, hclspec.NewObject(map[string]*hclspec.Spec{
+			"mode": hclspec.NewAttr("mode", "string", true),
+		})),
+		"console": hclspec.NewBlock("console", true, hclspec.NewObject(map[string]*hclspec.Spec{
+			"mode": hclspec.NewAttr("mode", "string", true),
+		})),
 	})
 
 	// capabilities indicates what optional features this driver supports
@@ -131,18 +128,45 @@ type Config struct {
 	// configSpec variable above. It's used to convert the HCL configuration
 	// passed by the Nomad agent into Go contructs.
 	CloudHypervisorBinaryPath string `codec:"cloud-hypervisor-binary-path"`
-	CloudHypervisorSocket     string `codec:"cloud-hypervisor-socket"`
+	CloudHypervisorSocketDir  string `codec:"cloud-hypervisor-socket-dir"`
+}
+
+// TaskPayloadConfig corresponds to PayloadConfig in chtypes.
+type TaskPayloadConfig struct {
+	Kernel string `codec:"kernel"`
+}
+
+// TaskDiskConfig corresponds to DiskConfig in chtypes.
+type TaskDiskConfig struct {
+	Path      string `codec:"path"`
+	ImageType string `codec:"image_type"`
+}
+
+// TaskCpusConfig corresponds to CpusConfig in chtypes (required fields only).
+type TaskCpusConfig struct {
+	BootVcpus int `codec:"boot_vcpus"`
+	MaxVcpus  int `codec:"max_vcpus"`
+}
+
+// TaskMemoryConfig corresponds to MemoryConfig in chtypes (required fields only).
+type TaskMemoryConfig struct {
+	Size int64 `codec:"size"`
+}
+
+// TaskConsoleConfig corresponds to ConsoleConfig in chtypes (required fields only).
+type TaskConsoleConfig struct {
+	Mode string `codec:"mode"`
 }
 
 // TaskConfig contains configuration information for a task that runs with
 // this plugin
 type TaskConfig struct {
-	// TODO: create decoded plugin task configuration struct
-	//
-	// This struct is the decoded version of the schema defined in the
-	// taskConfigSpec variable above. It's used to convert the string
-	// configuration for the task into Go contructs.
-	Greeting string `codec:"greeting"`
+	Payload TaskPayloadConfig `codec:"payload"`
+	Disk    []TaskDiskConfig  `codec:"disk"`
+	Cpus    TaskCpusConfig    `codec:"cpus"`
+	Memory  TaskMemoryConfig  `codec:"memory"`
+	Serial  TaskConsoleConfig `codec:"serial"`
+	Console TaskConsoleConfig `codec:"console"`
 }
 
 // TaskState is the runtime state which is encoded in the handle returned to
@@ -150,19 +174,10 @@ type TaskConfig struct {
 // This information is needed to rebuild the task state and handler during
 // recovery.
 type TaskState struct {
-	ReattachConfig *structs.ReattachConfig
-	TaskConfig     *drivers.TaskConfig
-	StartedAt      time.Time
-
-	// TODO: add any extra important values that must be persisted in order
-	// to restore a task.
-	//
-	// The plugin keeps track of its running tasks in a in-memory data
-	// structure. If the plugin crashes, this data will be lost, so Nomad
-	// will respawn a new instance of the plugin and try to restore its
-	// in-memory representation of the running tasks using the RecoverTask()
-	// method below.
-	Pid int
+	TaskConfig *drivers.TaskConfig
+	StartedAt  time.Time
+	Pid        int
+	SocketPath string
 }
 
 // CloudHypervisorDriverPlugin is an example driver plugin. When provisioned in a job,
@@ -222,62 +237,6 @@ func (d *CloudHypervisorDriverPlugin) ConfigSchema() (*hclspec.Spec, error) {
 	return configSpec, nil
 }
 
-func (d *CloudHypervisorDriverPlugin) startCloudHypervisor(ctx context.Context) (*exec.Cmd, context.CancelFunc, error) {
-	ctx, cancel := context.WithCancel(ctx)
-	bin := d.config.CloudHypervisorBinaryPath
-	sock := d.config.CloudHypervisorSocket
-
-	if bin == "" {
-		return nil, nil, fmt.Errorf("cloud-hypervisor binary path is empty")
-	}
-	if sock == "" {
-		return nil, nil, fmt.Errorf("cloud-hypervisor socket path is empty")
-	}
-
-	// Ensure parent directory exists.
-	if err := os.MkdirAll(filepath.Dir(sock), 0o755); err != nil {
-		return nil, nil, fmt.Errorf("create socket dir: %w", err)
-	}
-
-	// Remove stale socket from a previous crash/restart.
-	_ = os.Remove(sock)
-
-	args := []string{
-		"--api-socket", "path=" + sock,
-	}
-
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
-	}
-
-	cmd.Stdout = d.logger.StandardWriter(&hclog.StandardLoggerOptions{
-		ForceLevel: hclog.Info,
-	})
-
-	cmd.Stderr = d.logger.StandardWriter(&hclog.StandardLoggerOptions{
-		ForceLevel: hclog.Error,
-	})
-	cmd.Stdin = nil
-
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, nil, fmt.Errorf("start cloud-hypervisor: %w", err)
-	}
-
-	// Reap the child when it exits so it does not become a zombie.
-	go func() {
-		err := cmd.Wait()
-		if err != nil {
-			d.logger.Error("cloud-hypervisor exited", "error", err)
-		} else {
-			d.logger.Info("cloud-hypervisor exited cleanly")
-		}
-	}()
-
-	return cmd, cancel, nil
-}
-
 // SetConfig is called by the client to pass the configuration for the plugin.
 func (d *CloudHypervisorDriverPlugin) SetConfig(cfg *base.Config) error {
 	var config Config
@@ -289,6 +248,8 @@ func (d *CloudHypervisorDriverPlugin) SetConfig(cfg *base.Config) error {
 
 	// Save the configuration to the plugin
 	d.config = &config
+	d.nomadConfig = cfg.AgentConfig.Driver
+
 	binary := d.config.CloudHypervisorBinaryPath
 	// We check that the binary path exists and it is executable, using go fileutils for stat
 	info, err := os.Stat(binary)
@@ -382,6 +343,7 @@ func (d *CloudHypervisorDriverPlugin) buildFingerprint() *drivers.Fingerprint {
 
 	fp.Attributes["driver.cloud-hypervisor.cloud-hypervisor_version"] = structs.NewStringAttribute(date)
 	fp.Attributes["driver.cloud-hypervisor.cloud-hypervisor_path"] = structs.NewStringAttribute(binary)
+	fp.Attributes["driver.cloud-hypervisor.cloud-hypervisor_socket_dir"] = structs.NewStringAttribute(d.config.CloudHypervisorSocketDir)
 
 	return fp
 }
@@ -401,69 +363,33 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 	handle := drivers.NewTaskHandle(taskHandleVersion)
 	handle.Config = cfg
 
-	// TODO: implement driver specific mechanism to start the task.
-	//
-	// Once the task is started you will need to store any relevant runtime
-	// information in a taskHandle and TaskState. The taskHandle will be
-	// stored in-memory in the plugin and will be used to interact with the
-	// task.
-	//
-	// The TaskState will be returned to the Nomad client inside a
-	// drivers.TaskHandle instance. This TaskHandle will be sent back to plugin
-	// if the task ever needs to be recovered, so the TaskState should contain
-	// enough information to handle that.
-	//
-	// In the example below we use an executor to fork a process to run our
-	// greeter. The executor is then stored in the handle so we can access it
-	// later and the the plugin.Client is used to generate a reattach
-	// configuration that can be used to recover communication with the task.
-	executorConfig := &executor.ExecutorConfig{
-		LogFile:  filepath.Join(cfg.TaskDir().Dir, "executor.out"),
-		LogLevel: "debug",
-	}
-
-	exec, pluginClient, err := executor.CreateExecutor(d.logger, d.nomadConfig, executorConfig)
+	proc, err := startCloudHypervisor(
+		d.config.CloudHypervisorBinaryPath,
+		d.config.CloudHypervisorSocketDir,
+		cfg.ID,
+		cfg.StdoutPath,
+		cfg.StderrPath,
+		driverConfig,
+	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create executor: %v", err)
-	}
-
-	args := []string{
-		"--kernel", "/home/jose/projects/kittengrid/ch-tests/hypervisor-fw",
-		"--disk", "path=/home/jose/projects/kittengrid/ch-tests/ubuntu.raw,image_type=raw",
-		"--cpus", "boot=2",
-		"--memory", "size=1G",
-		"--serial", "tty",
-		"--console", "off",
-	}
-
-	execCmd := &executor.ExecCommand{
-		Cmd:        d.config.CloudHypervisorBinaryPath,
-		Args:       args,
-		StdoutPath: cfg.StdoutPath,
-		StderrPath: cfg.StderrPath,
-	}
-
-	ps, err := exec.Launch(execCmd)
-	if err != nil {
-		pluginClient.Kill()
-		return nil, nil, fmt.Errorf("failed to launch command with executor: %v", err)
+		return nil, nil, fmt.Errorf("failed to start cloud-hypervisor: %v", err)
 	}
 
 	h := &taskHandle{
-		exec:         exec,
-		pid:          ps.Pid,
-		pluginClient: pluginClient,
-		taskConfig:   cfg,
-		procState:    drivers.TaskStateRunning,
-		startedAt:    time.Now().Round(time.Millisecond),
-		logger:       d.logger,
+		pid:        proc.Pid,
+		socketPath: proc.SocketPath,
+		taskConfig: cfg,
+		procState:  drivers.TaskStateRunning,
+		startedAt:  time.Now().Round(time.Millisecond),
+		logger:     d.logger,
+		doneCh:     make(chan struct{}),
 	}
 
 	driverState := TaskState{
-		ReattachConfig: structs.ReattachConfigFromGoPlugin(pluginClient.ReattachConfig()),
-		Pid:            ps.Pid,
-		TaskConfig:     cfg,
-		StartedAt:      h.startedAt,
+		Pid:        proc.Pid,
+		SocketPath: proc.SocketPath,
+		TaskConfig: cfg,
+		StartedAt:  h.startedAt,
 	}
 
 	if err := handle.SetDriverState(&driverState); err != nil {
@@ -490,36 +416,20 @@ func (d *CloudHypervisorDriverPlugin) RecoverTask(handle *drivers.TaskHandle) er
 		return fmt.Errorf("failed to decode task state from handle: %v", err)
 	}
 
-	var driverConfig TaskConfig
-	if err := taskState.TaskConfig.DecodeDriverConfig(&driverConfig); err != nil {
-		return fmt.Errorf("failed to decode driver config: %v", err)
-	}
-
-	// TODO: implement driver specific logic to recover a task.
-	//
-	// Recovering a task involves recreating and storing a taskHandle as if the
-	// task was just started.
-	//
-	// In the example below we use the executor to re-attach to the process
-	// that was created when the task first started.
-	plugRC, err := structs.ReattachConfigToGoPlugin(taskState.ReattachConfig)
-	if err != nil {
-		return fmt.Errorf("failed to build ReattachConfig from taskConfig state: %v", err)
-	}
-
-	execImpl, pluginClient, err := executor.ReattachToExecutor(plugRC, d.logger, d.nomadConfig.Topology.Compute())
-	if err != nil {
-		return fmt.Errorf("failed to reattach to executor: %v", err)
+	// Check the process is still alive before declaring recovery successful.
+	if err := syscall.Kill(taskState.Pid, syscall.Signal(0)); err != nil {
+		return fmt.Errorf("cloud-hypervisor pid %d not found: %w", taskState.Pid, err)
 	}
 
 	h := &taskHandle{
-		exec:         execImpl,
-		pid:          taskState.Pid,
-		pluginClient: pluginClient,
-		taskConfig:   taskState.TaskConfig,
-		procState:    drivers.TaskStateRunning,
-		startedAt:    taskState.StartedAt,
-		exitResult:   &drivers.ExitResult{},
+		pid:        taskState.Pid,
+		socketPath: taskState.SocketPath,
+		taskConfig: taskState.TaskConfig,
+		procState:  drivers.TaskStateRunning,
+		startedAt:  taskState.StartedAt,
+		exitResult: &drivers.ExitResult{},
+		logger:     d.logger,
+		doneCh:     make(chan struct{}),
 	}
 
 	d.tasks.Set(taskState.TaskConfig.ID, h)
@@ -542,38 +452,15 @@ func (d *CloudHypervisorDriverPlugin) WaitTask(ctx context.Context, taskID strin
 
 func (d *CloudHypervisorDriverPlugin) handleWait(ctx context.Context, handle *taskHandle, ch chan *drivers.ExitResult) {
 	defer close(ch)
-	var result *drivers.ExitResult
 
-	// TODO: implement driver specific logic to notify Nomad the task has been
-	// completed and what was the exit result.
-	//
-	// When a result is sent in the result channel Nomad will stop the task and
-	// emit an event that an operator can use to get an insight on why the task
-	// stopped.
-	//
-	// In the example below we block and wait until the executor finishes
-	// running, at which point we send the exit code and signal in the result
-	// channel.
-	ps, err := handle.exec.Wait(ctx)
-	if err != nil {
-		result = &drivers.ExitResult{
-			Err: fmt.Errorf("executor: error waiting on process: %v", err),
-		}
-	} else {
-		result = &drivers.ExitResult{
-			ExitCode: ps.ExitCode,
-			Signal:   ps.Signal,
-		}
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-d.ctx.Done():
-			return
-		case ch <- result:
-		}
+	select {
+	case <-handle.doneCh:
+		handle.stateLock.RLock()
+		result := handle.exitResult
+		handle.stateLock.RUnlock()
+		ch <- result
+	case <-ctx.Done():
+	case <-d.ctx.Done():
 	}
 }
 
@@ -584,22 +471,25 @@ func (d *CloudHypervisorDriverPlugin) StopTask(taskID string, timeout time.Durat
 		return drivers.ErrTaskNotFound
 	}
 
-	// TODO: implement driver specific logic to stop a task.
-	//
-	// The StopTask function is expected to stop a running task by sending the
-	// given signal to it. If the task does not stop during the given timeout,
-	// the driver must forcefully kill the task.
-	//
-	// In the example below we let the executor handle the task shutdown
-	// process for us, but you might need to customize this for your own
-	// implementation.
-	if err := handle.exec.Shutdown(signal, timeout); err != nil {
-		if handle.pluginClient.Exited() {
-			return nil
-		}
-		return fmt.Errorf("executor Shutdown failed: %v", err)
+	sig := syscall.SIGTERM
+	if s, ok := signals.SignalLookup[signal]; ok {
+		sig = s.(syscall.Signal)
 	}
 
+	if err := syscall.Kill(handle.pid, sig); err != nil {
+		return fmt.Errorf("failed to send signal to pid %d: %w", handle.pid, err)
+	}
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if syscall.Kill(handle.pid, syscall.Signal(0)) != nil {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Grace period elapsed — force kill.
+	_ = syscall.Kill(handle.pid, syscall.SIGKILL)
 	return nil
 }
 
@@ -614,20 +504,8 @@ func (d *CloudHypervisorDriverPlugin) DestroyTask(taskID string, force bool) err
 		return errors.New("cannot destroy running task")
 	}
 
-	// TODO: implement driver specific logic to destroy a complete task.
-	//
-	// Destroying a task includes removing any resources used by task and any
-	// local references in the plugin. If force is set to true the task should
-	// be destroyed even if it's currently running.
-	//
-	// In the example below we use the executor to force shutdown the task
-	// (timeout equals 0).
-	if !handle.pluginClient.Exited() {
-		if err := handle.exec.Shutdown("", 0); err != nil {
-			handle.logger.Error("destroying executor failed", "err", err)
-		}
-
-		handle.pluginClient.Kill()
+	if handle.IsRunning() {
+		_ = syscall.Kill(handle.pid, syscall.SIGKILL)
 	}
 
 	d.tasks.Delete(taskID)
@@ -651,15 +529,11 @@ func (d *CloudHypervisorDriverPlugin) TaskStats(ctx context.Context, taskID stri
 		return nil, drivers.ErrTaskNotFound
 	}
 
-	// TODO: implement driver specific logic to send task stats.
-	//
-	// This function returns a channel that Nomad will use to listen for task
-	// stats (e.g., CPU and memory usage) in a given interval. It should send
-	// stats until the context is canceled or the task stops running.
-	//
-	// In the example below we use the Stats function provided by the executor,
-	// but you can build a set of functions similar to the fingerprint process.
-	return handle.exec.Stats(ctx, interval)
+	// VM resource stats are not yet implemented; return an empty channel.
+	_ = handle
+	ch := make(chan *drivers.TaskResourceUsage)
+	close(ch)
+	return ch, nil
 }
 
 // TaskEvents returns a channel that the plugin can use to emit task related events.
@@ -675,19 +549,13 @@ func (d *CloudHypervisorDriverPlugin) SignalTask(taskID string, signal string) e
 		return drivers.ErrTaskNotFound
 	}
 
-	// TODO: implement driver specific signal handling logic.
-	//
-	// The given signal must be forwarded to the target taskID. If this plugin
-	// doesn't support receiving signals (capability SendSignals is set to
-	// false) you can just return nil.
-	sig := os.Interrupt
+	sig := syscall.SIGINT
 	if s, ok := signals.SignalLookup[signal]; ok {
-		sig = s
+		sig = s.(syscall.Signal)
 	} else {
 		d.logger.Warn("unknown signal to send to task, using SIGINT instead", "signal", signal, "task_id", handle.taskConfig.ID)
-
 	}
-	return handle.exec.Signal(sig)
+	return syscall.Kill(handle.pid, sig)
 }
 
 // ExecTask returns the result of executing the given command inside a task.
