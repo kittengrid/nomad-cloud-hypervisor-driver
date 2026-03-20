@@ -94,6 +94,7 @@ var (
 		"disk": hclspec.NewBlockList("disk", hclspec.NewObject(map[string]*hclspec.Spec{
 			"path":       hclspec.NewAttr("path", "string", true),
 			"image_type": hclspec.NewAttr("image_type", "string", false),
+			"readonly":   hclspec.NewAttr("readonly", "bool", false),
 		})),
 		"cpus": hclspec.NewBlock("cpus", true, hclspec.NewObject(map[string]*hclspec.Spec{
 			"boot_vcpus": hclspec.NewAttr("boot_vcpus", "number", true),
@@ -105,6 +106,10 @@ var (
 		"console": hclspec.NewBlock("console", true, hclspec.NewObject(map[string]*hclspec.Spec{
 			"mode": hclspec.NewAttr("mode", "string", true),
 		})),
+		// cloud_init is an optional inline cloud-config string.  When set the
+		// driver writes the content to a file, generates a NoCloud seed ISO
+		// image and attaches it as a read-only disk to the VM.
+		"cloud_init": hclspec.NewAttr("cloud_init", "string", false),
 	})
 
 	// capabilities indicates what optional features this driver supports
@@ -140,6 +145,7 @@ type TaskPayloadConfig struct {
 type TaskDiskConfig struct {
 	Path      string `codec:"path"`
 	ImageType string `codec:"image_type"`
+	Readonly  bool   `codec:"readonly"`
 }
 
 // TaskCpusConfig corresponds to CpusConfig in chtypes (required fields only).
@@ -166,6 +172,10 @@ type TaskConfig struct {
 	Cpus    TaskCpusConfig    `codec:"cpus"`
 	Memory  TaskMemoryConfig  `codec:"memory"`
 	Console TaskConsoleConfig `codec:"console"`
+	// CloudInit is an optional inline cloud-config string.  When non-empty the
+	// driver generates a NoCloud seed ISO image from this content and attaches
+	// it as a read-only disk.
+	CloudInit string `codec:"cloud_init"`
 }
 
 // TaskState is the runtime state which is encoded in the handle returned to
@@ -373,6 +383,25 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 		return nil, nil, fmt.Errorf("failed to create executor: %v", err)
 	}
 
+	// If an inline cloud-init payload was provided, materialise it as a
+	// NoCloud seed ISO inside the task's local directory so it survives
+	// across driver restarts together with the rest of the allocation data.
+	if driverConfig.CloudInit != "" {
+		isoPath := filepath.Join(cfg.TaskDir().LocalDir, "cloud-init-seed.iso")
+		if err := createCloudInitISO(driverConfig.CloudInit, isoPath, d.logger); err != nil {
+			return nil, nil, fmt.Errorf("failed to create cloud-init ISO: %v", err)
+		}
+		// Append the generated ISO as a read-only disk so the task config
+		// carries the resolved path into startCloudHypervisor.
+		driverConfig.Disk = append(driverConfig.Disk, TaskDiskConfig{
+			Path:     isoPath,
+			Readonly: true,
+		})
+	}
+	d.logger.Debug("starting cloud-hypervisor process", "binary", d.config.CloudHypervisorBinaryPath, "socket_dir", d.config.CloudHypervisorSocketDir)
+	args := buildCHArgs(driverConfig, "") // socketBasePath is set by startCloudHypervisor
+	d.logger.Debug("cloud-hypervisor arguments", "args", args)
+
 	proc, err := startCloudHypervisor(
 		d.config.CloudHypervisorBinaryPath,
 		d.config.CloudHypervisorSocketDir,
@@ -521,6 +550,16 @@ func (d *CloudHypervisorDriverPlugin) DestroyTask(taskID string, force bool) err
 
 	if handle.IsRunning() {
 		_ = syscall.Kill(handle.pid, syscall.SIGKILL)
+	}
+
+	// Remove the cloud-init seed ISO if one was generated for this task.
+	// The file lives inside the alloc's local dir, which Nomad will eventually
+	// garbage-collect anyway, but we remove it explicitly here to be tidy.
+	if handle.driverConfig.CloudInit != "" {
+		isoPath := filepath.Join(handle.taskConfig.TaskDir().LocalDir, "cloud-init-seed.iso")
+		if err := os.Remove(isoPath); err != nil && !os.IsNotExist(err) {
+			d.logger.Warn("failed to remove cloud-init ISO", "path", isoPath, "error", err)
+		}
 	}
 
 	d.tasks.Delete(taskID)

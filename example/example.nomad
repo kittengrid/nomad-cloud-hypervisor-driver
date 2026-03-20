@@ -35,6 +35,22 @@ job "example" {
         console {
           mode = "off"
         }
+
+        # Optional: inline cloud-init user-data.  When set the driver creates a
+        # NoCloud seed ISO and attaches it as a read-only disk automatically.
+        # The guest must have cloud-init installed; no extra disk block is needed.
+        cloud_init = <<-EOT
+        #cloud-config
+        users:
+          - name: cloud
+            passwd: $6$7125787751a8d18a$sHwGySomUA1PawiNFWVCKYQN.Ec.Wzz0JtPPL1MvzFrkwmop2dq7.4CYf03A5oemPQ4pOFCCrtCelvFBEle/K.
+            sudo: ALL=(ALL) NOPASSWD:ALL
+            lock_passwd: False
+            inactive: False
+            shell: /bin/bash
+
+        ssh_pwauth: True
+        EOT
       }
     }
   }

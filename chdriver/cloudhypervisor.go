@@ -65,13 +65,20 @@ func buildCHArgs(cfg TaskConfig, socketBasePath string) []string {
 		args = append(args, "--kernel", cfg.Payload.Kernel)
 	}
 
+	diskArgs := make([]string, 0)
 	for _, disk := range cfg.Disk {
-		diskArg := "path=" + disk.Path
+		diskArgEntry := "path=" + disk.Path
 		if disk.ImageType != "" {
-			diskArg += ",image_type=" + disk.ImageType
+			diskArgEntry += ",image_type=" + disk.ImageType
 		}
-		args = append(args, "--disk", diskArg)
+		if disk.Readonly {
+			diskArgEntry += ",readonly=on"
+		}
+		diskArgs = append(diskArgs, diskArgEntry)
 	}
+
+	args = append(args, "--disk")
+	args = append(args, diskArgs...)
 
 	if cfg.Cpus.BootVcpus > 0 {
 		cpuArg := fmt.Sprintf("boot=%d", cfg.Cpus.BootVcpus)
