@@ -14,9 +14,9 @@ import (
 // CloudHypervisorProcess holds the identifiers needed to track a running
 // cloud-hypervisor instance.
 type CloudHypervisorProcess struct {
-	Pid        int
-	SocketPath string
-	exec       executor.Executor
+	Pid            int
+	SocketBasePath string
+	exec           executor.Executor
 }
 
 // startCloudHypervisor launches cloud-hypervisor as an independent process.
@@ -29,18 +29,18 @@ func startCloudHypervisor(
 	cfg TaskConfig,
 	exec executor.Executor,
 ) (*CloudHypervisorProcess, error) {
-	socketPath := filepath.Join(socketDir, filepath.Base(taskID)+".sock")
+	socketBasePath := filepath.Join(socketDir, filepath.Base(taskID))
 
 	if err := os.MkdirAll(socketDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create socket dir: %w", err)
 	}
 
 	// Remove any stale socket left by a previous crash.
-	_ = os.Remove(socketPath)
+	_ = os.Remove(socketBasePath + ".sock")
 
 	execCmd := &executor.ExecCommand{
 		Cmd:        binaryPath,
-		Args:       buildCHArgs(cfg, socketPath),
+		Args:       buildCHArgs(cfg, socketBasePath),
 		StdoutPath: stdoutPath,
 		StderrPath: stderrPath,
 	}
@@ -51,16 +51,16 @@ func startCloudHypervisor(
 	}
 
 	return &CloudHypervisorProcess{
-		Pid:        ps.Pid,
-		SocketPath: socketPath,
-		exec:       exec,
+		Pid:            ps.Pid,
+		SocketBasePath: socketBasePath,
+		exec:           exec,
 	}, nil
 }
 
 // buildCHArgs constructs the CLI argument list for cloud-hypervisor from a TaskConfig.
-func buildCHArgs(cfg TaskConfig, socketPath string) []string {
-	args := []string{"--api-socket", "path=" + socketPath}
-
+func buildCHArgs(cfg TaskConfig, socketBasePath string) []string {
+	args := []string{"--api-socket", "path=" + socketBasePath + ".sock"}
+	args = append(args, "--serial", "socket="+socketBasePath+".serial.sock")
 	if cfg.Payload.Kernel != "" {
 		args = append(args, "--kernel", cfg.Payload.Kernel)
 	}
@@ -83,10 +83,6 @@ func buildCHArgs(cfg TaskConfig, socketPath string) []string {
 
 	if cfg.Memory.Size > 0 {
 		args = append(args, "--memory", fmt.Sprintf("size=%d", cfg.Memory.Size))
-	}
-
-	if cfg.Serial.Mode != "" {
-		args = append(args, "--serial", cfg.Serial.Mode)
 	}
 
 	if cfg.Console.Mode != "" {

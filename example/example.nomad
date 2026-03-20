@@ -32,10 +32,6 @@ job "example" {
           size = 1073741824
         }
 
-        serial {
-          mode = "tty"
-        }
-
         console {
           mode = "off"
         }

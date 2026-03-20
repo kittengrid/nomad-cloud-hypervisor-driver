@@ -102,9 +102,6 @@ var (
 		"memory": hclspec.NewBlock("memory", true, hclspec.NewObject(map[string]*hclspec.Spec{
 			"size": hclspec.NewAttr("size", "number", true),
 		})),
-		"serial": hclspec.NewBlock("serial", true, hclspec.NewObject(map[string]*hclspec.Spec{
-			"mode": hclspec.NewAttr("mode", "string", true),
-		})),
 		"console": hclspec.NewBlock("console", true, hclspec.NewObject(map[string]*hclspec.Spec{
 			"mode": hclspec.NewAttr("mode", "string", true),
 		})),
@@ -168,7 +165,6 @@ type TaskConfig struct {
 	Disk    []TaskDiskConfig  `codec:"disk"`
 	Cpus    TaskCpusConfig    `codec:"cpus"`
 	Memory  TaskMemoryConfig  `codec:"memory"`
-	Serial  TaskConsoleConfig `codec:"serial"`
 	Console TaskConsoleConfig `codec:"console"`
 }
 
@@ -394,19 +390,19 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 		pid:          proc.Pid,
 		exec:         proc.exec,
 		pluginClient: *pluginClient,
-		socketPath:   proc.SocketPath,
+		socketPath:   proc.SocketBasePath,
 		taskConfig:   cfg,
 		procState:    drivers.TaskStateRunning,
 		startedAt:    time.Now().Round(time.Millisecond),
 		logger:       d.logger,
 		doneCh:       make(chan struct{}),
-		client:       NewCloudHypervisorClient(NewCloudHypervisorClientConfig(proc.SocketPath), d.logger),
+		client:       NewCloudHypervisorClient(NewCloudHypervisorClientConfig(proc.SocketBasePath), d.logger),
 		driverConfig: driverConfig,
 	}
 
 	driverState := TaskState{
 		Pid:        proc.Pid,
-		SocketPath: proc.SocketPath,
+		SocketPath: proc.SocketBasePath,
 		TaskConfig: cfg,
 		StartedAt:  h.startedAt,
 	}
