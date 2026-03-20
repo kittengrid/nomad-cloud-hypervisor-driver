@@ -20,10 +20,10 @@ const (
 
 // VmInfo holds general information about a VM instance.
 type VmInfo struct {
-	Config            VmConfig               `json:"config"`
-	State             VmState                `json:"state"`
-	MemoryActualSize  *int64                 `json:"memory_actual_size,omitempty"`
-	DeviceTree        map[string]DeviceNode  `json:"device_tree,omitempty"`
+	Config           VmConfig              `json:"config"`
+	State            VmState               `json:"state"`
+	MemoryActualSize *int64                `json:"memory_actual_size,omitempty"`
+	DeviceTree       map[string]DeviceNode `json:"device_tree,omitempty"`
 }
 
 // DeviceNode represents a node in the VM device tree.
@@ -54,10 +54,10 @@ type PayloadConfig struct {
 
 // CpuTopology describes the CPU topology exposed to the guest.
 type CpuTopology struct {
-	ThreadsPerCore  *int `json:"threads_per_core,omitempty"`
-	CoresPerDie     *int `json:"cores_per_die,omitempty"`
-	DiesPerPackage  *int `json:"dies_per_package,omitempty"`
-	Packages        *int `json:"packages,omitempty"`
+	ThreadsPerCore *int `json:"threads_per_core,omitempty"`
+	CoresPerDie    *int `json:"cores_per_die,omitempty"`
+	DiesPerPackage *int `json:"dies_per_package,omitempty"`
+	Packages       *int `json:"packages,omitempty"`
 }
 
 // CpuAffinity pins a vCPU to a set of host CPUs.
@@ -169,24 +169,24 @@ const (
 
 // DiskConfig describes a disk device attached to a VM.
 type DiskConfig struct {
-	Path              string             `json:"path,omitempty"`
-	Readonly          *bool              `json:"readonly,omitempty"`
-	Direct            *bool              `json:"direct,omitempty"`
-	Iommu             *bool              `json:"iommu,omitempty"`
-	NumQueues         *int               `json:"num_queues,omitempty"`
-	QueueSize         *int               `json:"queue_size,omitempty"`
-	VhostUser         *bool              `json:"vhost_user,omitempty"`
-	VhostSocket       string             `json:"vhost_socket,omitempty"`
-	RateLimiterConfig *RateLimiterConfig `json:"rate_limiter_config,omitempty"`
-	PciSegment        *int16             `json:"pci_segment,omitempty"`
-	ID                string             `json:"id,omitempty"`
-	Serial            string             `json:"serial,omitempty"`
-	RateLimitGroup    string             `json:"rate_limit_group,omitempty"`
+	Path              string              `json:"path,omitempty"`
+	Readonly          *bool               `json:"readonly,omitempty"`
+	Direct            *bool               `json:"direct,omitempty"`
+	Iommu             *bool               `json:"iommu,omitempty"`
+	NumQueues         *int                `json:"num_queues,omitempty"`
+	QueueSize         *int                `json:"queue_size,omitempty"`
+	VhostUser         *bool               `json:"vhost_user,omitempty"`
+	VhostSocket       string              `json:"vhost_socket,omitempty"`
+	RateLimiterConfig *RateLimiterConfig  `json:"rate_limiter_config,omitempty"`
+	PciSegment        *int16              `json:"pci_segment,omitempty"`
+	ID                string              `json:"id,omitempty"`
+	Serial            string              `json:"serial,omitempty"`
+	RateLimitGroup    string              `json:"rate_limit_group,omitempty"`
 	QueueAffinity     []VirtQueueAffinity `json:"queue_affinity,omitempty"`
-	BackingFiles      *bool              `json:"backing_files,omitempty"`
-	Sparse            *bool              `json:"sparse,omitempty"`
-	ImageType         *ImageType         `json:"image_type,omitempty"`
-	LockGranularity   *LockGranularity   `json:"lock_granularity,omitempty"`
+	BackingFiles      *bool               `json:"backing_files,omitempty"`
+	Sparse            *bool               `json:"sparse,omitempty"`
+	ImageType         *ImageType          `json:"image_type,omitempty"`
+	LockGranularity   *LockGranularity    `json:"lock_granularity,omitempty"`
 }
 
 // NetConfig describes a network device attached to a VM.
@@ -273,11 +273,11 @@ type DebugConsoleConfig struct {
 
 // DeviceConfig describes a host device passed through to the VM.
 type DeviceConfig struct {
-	Path              string `json:"path"`
-	Iommu             *bool  `json:"iommu,omitempty"`
-	PciSegment        *int16 `json:"pci_segment,omitempty"`
-	ID                string `json:"id,omitempty"`
-	XNvGpudirectClique *int8 `json:"x_nv_gpudirect_clique,omitempty"`
+	Path               string `json:"path"`
+	Iommu              *bool  `json:"iommu,omitempty"`
+	PciSegment         *int16 `json:"pci_segment,omitempty"`
+	ID                 string `json:"id,omitempty"`
+	XNvGpudirectClique *int8  `json:"x_nv_gpudirect_clique,omitempty"`
 }
 
 // VdpaConfig describes a vDPA device.
@@ -306,17 +306,17 @@ type NumaDistance struct {
 
 // NumaConfig describes a NUMA node.
 type NumaConfig struct {
-	GuestNumaID  int32          `json:"guest_numa_id"`
-	Cpus         []int32        `json:"cpus,omitempty"`
-	Distances    []NumaDistance `json:"distances,omitempty"`
-	MemoryZones  []string       `json:"memory_zones,omitempty"`
-	PciSegments  []int32        `json:"pci_segments,omitempty"`
-	DeviceID     string         `json:"device_id,omitempty"`
+	GuestNumaID int32          `json:"guest_numa_id"`
+	Cpus        []int32        `json:"cpus,omitempty"`
+	Distances   []NumaDistance `json:"distances,omitempty"`
+	MemoryZones []string       `json:"memory_zones,omitempty"`
+	PciSegments []int32        `json:"pci_segments,omitempty"`
+	DeviceID    string         `json:"device_id,omitempty"`
 }
 
 // PciSegmentConfig describes a PCI segment.
 type PciSegmentConfig struct {
-	PciSegment          int16  `json:"pci_segment"`
+	PciSegment           int16  `json:"pci_segment"`
 	Mmio32ApertureWeight *int32 `json:"mmio32_aperture_weight,omitempty"`
 	Mmio64ApertureWeight *int32 `json:"mmio64_aperture_weight,omitempty"`
 }
@@ -346,31 +346,31 @@ type LandlockConfig struct {
 
 // VmConfig is the top-level configuration used to create a VM instance.
 type VmConfig struct {
-	Cpus             *CpusConfig            `json:"cpus,omitempty"`
-	Memory           *MemoryConfig          `json:"memory,omitempty"`
-	Payload          PayloadConfig          `json:"payload"`
-	RateLimitGroups  []RateLimitGroupConfig  `json:"rate_limit_groups,omitempty"`
-	Disks            []DiskConfig           `json:"disks,omitempty"`
-	Net              []NetConfig            `json:"net,omitempty"`
-	Rng              *RngConfig             `json:"rng,omitempty"`
-	Balloon          *BalloonConfig         `json:"balloon,omitempty"`
-	Fs               []FsConfig             `json:"fs,omitempty"`
-	Pmem             []PmemConfig           `json:"pmem,omitempty"`
-	Serial           *ConsoleConfig         `json:"serial,omitempty"`
-	Console          *ConsoleConfig         `json:"console,omitempty"`
-	DebugConsole     *DebugConsoleConfig    `json:"debug_console,omitempty"`
-	Devices          []DeviceConfig         `json:"devices,omitempty"`
-	Vdpa             []VdpaConfig           `json:"vdpa,omitempty"`
-	Vsock            *VsockConfig           `json:"vsock,omitempty"`
-	Numa             []NumaConfig           `json:"numa,omitempty"`
-	Iommu            *bool                  `json:"iommu,omitempty"`
-	Watchdog         *bool                  `json:"watchdog,omitempty"`
-	Pvpanic          *bool                  `json:"pvpanic,omitempty"`
-	PciSegments      []PciSegmentConfig     `json:"pci_segments,omitempty"`
-	Platform         *PlatformConfig        `json:"platform,omitempty"`
-	Tpm              *TpmConfig             `json:"tpm,omitempty"`
-	LandlockEnable   *bool                  `json:"landlock_enable,omitempty"`
-	LandlockRules    []LandlockConfig       `json:"landlock_rules,omitempty"`
+	Cpus            *CpusConfig            `json:"cpus,omitempty"`
+	Memory          *MemoryConfig          `json:"memory,omitempty"`
+	Payload         PayloadConfig          `json:"payload"`
+	RateLimitGroups []RateLimitGroupConfig `json:"rate_limit_groups,omitempty"`
+	Disks           []DiskConfig           `json:"disks,omitempty"`
+	Net             []NetConfig            `json:"net,omitempty"`
+	Rng             *RngConfig             `json:"rng,omitempty"`
+	Balloon         *BalloonConfig         `json:"balloon,omitempty"`
+	Fs              []FsConfig             `json:"fs,omitempty"`
+	Pmem            []PmemConfig           `json:"pmem,omitempty"`
+	Serial          *ConsoleConfig         `json:"serial,omitempty"`
+	Console         *ConsoleConfig         `json:"console,omitempty"`
+	DebugConsole    *DebugConsoleConfig    `json:"debug_console,omitempty"`
+	Devices         []DeviceConfig         `json:"devices,omitempty"`
+	Vdpa            []VdpaConfig           `json:"vdpa,omitempty"`
+	Vsock           *VsockConfig           `json:"vsock,omitempty"`
+	Numa            []NumaConfig           `json:"numa,omitempty"`
+	Iommu           *bool                  `json:"iommu,omitempty"`
+	Watchdog        *bool                  `json:"watchdog,omitempty"`
+	Pvpanic         *bool                  `json:"pvpanic,omitempty"`
+	PciSegments     []PciSegmentConfig     `json:"pci_segments,omitempty"`
+	Platform        *PlatformConfig        `json:"platform,omitempty"`
+	Tpm             *TpmConfig             `json:"tpm,omitempty"`
+	LandlockEnable  *bool                  `json:"landlock_enable,omitempty"`
+	LandlockRules   []LandlockConfig       `json:"landlock_rules,omitempty"`
 }
 
 // VmResize describes a request to resize the VM's vCPUs or memory.
@@ -417,10 +417,10 @@ const (
 
 // RestoreConfig describes how to restore a VM from a snapshot.
 type RestoreConfig struct {
-	SourceURL          string             `json:"source_url"`
-	Prefault           *bool              `json:"prefault,omitempty"`
-	MemoryRestoreMode  *MemoryRestoreMode `json:"memory_restore_mode,omitempty"`
-	Resume             *bool              `json:"resume,omitempty"`
+	SourceURL         string             `json:"source_url"`
+	Prefault          *bool              `json:"prefault,omitempty"`
+	MemoryRestoreMode *MemoryRestoreMode `json:"memory_restore_mode,omitempty"`
+	Resume            *bool              `json:"resume,omitempty"`
 }
 
 // ReceiveMigrationData describes the local endpoint for an incoming migration.
