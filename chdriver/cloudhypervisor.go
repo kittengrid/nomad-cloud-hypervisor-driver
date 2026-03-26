@@ -65,6 +65,10 @@ func buildCHArgs(cfg TaskConfig, socketBasePath string) []string {
 		args = append(args, "--kernel", cfg.Payload.Kernel)
 	}
 
+	if cfg.Payload.Initramfs != "" {
+		args = append(args, "--initramfs", cfg.Payload.Initramfs)
+	}
+
 	diskArgs := make([]string, 0)
 	for _, disk := range cfg.Disk {
 		diskArgEntry := "path=" + disk.Path

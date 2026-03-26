@@ -89,7 +89,8 @@ var (
 	// when a job is submitted.
 	taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 		"payload": hclspec.NewBlock("payload", true, hclspec.NewObject(map[string]*hclspec.Spec{
-			"kernel": hclspec.NewAttr("kernel", "string", true),
+			"kernel":    hclspec.NewAttr("kernel", "string", true),
+			"initramfs": hclspec.NewAttr("initramfs", "string", true),
 		})),
 		"disk": hclspec.NewBlockList("disk", hclspec.NewObject(map[string]*hclspec.Spec{
 			"path":       hclspec.NewAttr("path", "string", true),
@@ -138,7 +139,8 @@ type Config struct {
 
 // TaskPayloadConfig corresponds to PayloadConfig in chtypes.
 type TaskPayloadConfig struct {
-	Kernel string `codec:"kernel"`
+	Kernel    string `codec:"kernel"`
+	Initramfs string `codec:"initramfs"`
 }
 
 // TaskDiskConfig corresponds to DiskConfig in chtypes.
