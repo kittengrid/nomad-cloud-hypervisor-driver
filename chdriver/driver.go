@@ -183,10 +183,11 @@ type TaskConfig struct {
 // This information is needed to rebuild the task state and handler during
 // recovery.
 type TaskState struct {
-	TaskConfig *drivers.TaskConfig
-	StartedAt  time.Time
-	Pid        int
-	SocketPath string
+	TaskConfig     *drivers.TaskConfig
+	StartedAt      time.Time
+	ReattachConfig *structs.ReattachConfig
+	Pid            int
+	SocketPath     string
 }
 
 // CloudHypervisorDriverPlugin is an example driver plugin. When provisioned in a job,
@@ -374,6 +375,7 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 	executorConfig := &executor.ExecutorConfig{
 		LogFile:  pluginLogFile,
 		LogLevel: "debug",
+		Compute:  d.nomadConfig.Topology.Compute(),
 	}
 	logger := d.logger.With("task_name", handle.Config.Name, "alloc_id", handle.Config.AllocID)
 
@@ -398,10 +400,6 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 			Readonly: true,
 		})
 	}
-	d.logger.Debug("starting cloud-hypervisor process", "binary", d.config.CloudHypervisorBinaryPath, "socket_dir", d.config.CloudHypervisorSocketDir)
-	args := buildCHArgs(driverConfig, "") // socketBasePath is set by startCloudHypervisor
-	d.logger.Debug("cloud-hypervisor arguments", "args", args)
-
 	proc, err := startCloudHypervisor(
 		d.config.CloudHypervisorBinaryPath,
 		d.config.CloudHypervisorSocketDir,
@@ -418,7 +416,6 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 	h := &taskHandle{
 		pid:          proc.Pid,
 		exec:         proc.exec,
-		pluginClient: *pluginClient,
 		socketPath:   proc.SocketBasePath,
 		taskConfig:   cfg,
 		procState:    drivers.TaskStateRunning,
@@ -430,10 +427,11 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 	}
 
 	driverState := TaskState{
-		Pid:        proc.Pid,
-		SocketPath: proc.SocketBasePath,
-		TaskConfig: cfg,
-		StartedAt:  h.startedAt,
+		Pid:            proc.Pid,
+		SocketPath:     proc.SocketBasePath,
+		ReattachConfig: structs.ReattachConfigFromGoPlugin(pluginClient.ReattachConfig()),
+		TaskConfig:     cfg,
+		StartedAt:      h.startedAt,
 	}
 
 	if err := handle.SetDriverState(&driverState); err != nil {
@@ -460,6 +458,19 @@ func (d *CloudHypervisorDriverPlugin) RecoverTask(handle *drivers.TaskHandle) er
 		return fmt.Errorf("failed to decode task state from handle: %v", err)
 	}
 
+	// Recreate the executor client so we can monitor the process and collect stats.
+	plugRC, err := structs.ReattachConfigToGoPlugin(taskState.ReattachConfig)
+	if err != nil {
+		d.logger.Error("failed to build ReattachConfig from task state", "error", err, "task_id", handle.Config.ID)
+		return fmt.Errorf("failed to build ReattachConfig from task state: %v", err)
+	}
+
+	exec, _, err := executor.ReattachToExecutor(
+		plugRC,
+		d.logger.With("task_name", handle.Config.Name, "alloc_id", handle.Config.AllocID),
+		d.nomadConfig.Topology.Compute(),
+	)
+
 	// Check the process is still alive before declaring recovery successful.
 	if err := syscall.Kill(taskState.Pid, syscall.Signal(0)); err != nil {
 		return fmt.Errorf("cloud-hypervisor pid %d not found: %w", taskState.Pid, err)
@@ -468,14 +479,17 @@ func (d *CloudHypervisorDriverPlugin) RecoverTask(handle *drivers.TaskHandle) er
 	h := &taskHandle{
 		pid:        taskState.Pid,
 		socketPath: taskState.SocketPath,
+		exec:       exec,
 		taskConfig: taskState.TaskConfig,
 		procState:  drivers.TaskStateRunning,
 		startedAt:  taskState.StartedAt,
 		exitResult: &drivers.ExitResult{},
 		logger:     d.logger,
+		client:     NewCloudHypervisorClient(NewCloudHypervisorClientConfig(taskState.SocketPath), d.logger),
 		doneCh:     make(chan struct{}),
 	}
 
+	d.logger.Info("successfully recovered task", "task_id", handle.Config.ID, "pid", h.pid)
 	d.tasks.Set(taskState.TaskConfig.ID, h)
 
 	go h.run()
