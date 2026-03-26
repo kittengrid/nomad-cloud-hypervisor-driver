@@ -6,7 +6,7 @@ job "example" {
   type        = "batch"
 
   group "example" {
-    task "hello-world" {
+    task "kittenvisor" {
       driver = "cloud-hypervisor"
 
       resources {
