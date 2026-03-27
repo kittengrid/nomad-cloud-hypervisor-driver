@@ -109,8 +109,8 @@ var (
 			"mode": hclspec.NewAttr("mode", "string", true),
 		})),
 		"network": hclspec.NewBlockList("network", hclspec.NewObject(map[string]*hclspec.Spec{
-			"mac":                hclspec.NewAttr("mac", "string", true),
-			"tap":                hclspec.NewAttr("tap", "string", true),
+			"mac":                hclspec.NewAttr("mac", "string", false),
+			"tap":                hclspec.NewAttr("tap", "string", false),
 			"auto-tuntap":        hclspec.NewAttr("auto-tuntap", "bool", false),
 			"auto-tuntap-bridge": hclspec.NewAttr("auto-tuntap-bridge", "string", false),
 		})),
