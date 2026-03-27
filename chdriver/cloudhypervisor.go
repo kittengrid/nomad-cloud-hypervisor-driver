@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/hashicorp/nomad/drivers/shared/executor"
 )
@@ -102,34 +103,38 @@ func buildCHArgs(cfg TaskConfig, socketBasePath string, taskID string) ([]string
 		netArgEntry := ""
 
 		if net.AutoTuntap {
+			// Taskid has the form tap-6ca4e8fe-e8fb-0491-d383-2caaf2537d6c/kittenvisor/5a9094d9
+			// we hey the last part of the path to use as the tap device name, so we get tap-5a9094d9
+			ifaceName := fmt.Sprintf("tap-%s", taskID[strings.LastIndex(taskID, "/")+1:])
+
 			// Set up the tap device in linux
-			command := fmt.Sprintf("ip tuntap add dev tap-%s mode tap", taskID)
+			command := fmt.Sprintf("ip tuntap add dev %s mode tap", ifaceName)
 			if err := exec.Command(command); err != nil {
 				fmt.Printf("Failed to create tap device: %v\n", err)
 
 				return nil, fmt.Errorf("create tap device: %w", err)
 			}
 
-			command = fmt.Sprintf("ip link set tap-%s master %s", taskID, net.AutoTuntapBridge)
+			command = fmt.Sprintf("ip link set %s master %s", ifaceName, net.AutoTuntapBridge)
 			if err := exec.Command(command); err != nil {
 				fmt.Printf("Failed to set tap device master: %v\n", err)
 
 				return nil, fmt.Errorf("set tap device master: %w", err)
 			}
-			command = fmt.Sprintf("ip link set tap-%s up", taskID)
+			command = fmt.Sprintf("ip link set %s up", ifaceName)
 			if err := exec.Command(command); err != nil {
 				fmt.Printf("Failed to set tap device up: %v\n", err)
 
 				return nil, fmt.Errorf("set tap device up: %w", err)
 			}
-			command = fmt.Sprintf("bridge link set dev tap-%s isolated on", taskID)
+			command = fmt.Sprintf("bridge link set dev %s isolated on", ifaceName)
 			if err := exec.Command(command); err != nil {
 				fmt.Printf("Failed to set tap device isolated: %v\n", err)
 
 				return nil, fmt.Errorf("set tap device isolated: %w", err)
 			}
 
-			netArgEntry = "tap=tap-" + taskID
+			netArgEntry = "tap=" + ifaceName
 		} else {
 			netArgEntry = "tap=" + net.Tap
 			if net.Mac != "" {
