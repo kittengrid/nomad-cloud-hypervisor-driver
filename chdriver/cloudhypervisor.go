@@ -60,6 +60,7 @@ func startCloudHypervisor(
 // buildCHArgs constructs the CLI argument list for cloud-hypervisor from a TaskConfig.
 func buildCHArgs(cfg TaskConfig, socketBasePath string) []string {
 	args := []string{"--api-socket", "path=" + socketBasePath + ".sock"}
+
 	args = append(args, "--serial", "socket="+socketBasePath+".serial.sock")
 	if cfg.Payload.Kernel != "" {
 		args = append(args, "--kernel", cfg.Payload.Kernel)
@@ -67,6 +68,10 @@ func buildCHArgs(cfg TaskConfig, socketBasePath string) []string {
 
 	if cfg.Payload.Initramfs != "" {
 		args = append(args, "--initramfs", cfg.Payload.Initramfs)
+	}
+
+	if cfg.Payload.Cmdline != "" {
+		args = append(args, "--cmdline", cfg.Payload.Cmdline)
 	}
 
 	diskArgs := make([]string, 0)
@@ -81,8 +86,23 @@ func buildCHArgs(cfg TaskConfig, socketBasePath string) []string {
 		diskArgs = append(diskArgs, diskArgEntry)
 	}
 
-	args = append(args, "--disk")
-	args = append(args, diskArgs...)
+	if len(diskArgs) > 0 {
+		args = append(args, "--disk")
+		args = append(args, diskArgs...)
+	}
+
+	networkArgs := make([]string, 0)
+	for _, net := range cfg.Network {
+		netArgEntry := "tap=" + net.Tap
+		if net.Mac != "" {
+			netArgEntry += ",mac=" + net.Mac
+		}
+		networkArgs = append(networkArgs, netArgEntry)
+	}
+	if len(networkArgs) > 0 {
+		args = append(args, "--net")
+		args = append(args, networkArgs...)
+	}
 
 	if cfg.Cpus.BootVcpus > 0 {
 		cpuArg := fmt.Sprintf("boot=%d", cfg.Cpus.BootVcpus)

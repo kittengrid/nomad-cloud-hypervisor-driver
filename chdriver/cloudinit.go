@@ -25,7 +25,7 @@ import (
 //
 // The function returns an error if none of the tools are available or if
 // image creation fails.
-func createCloudInitISO(cloudConfig string, isoPath string, logger hclog.Logger) error {
+func createCloudInitISO(cloudInitConfig *CloudInit, isoPath string, logger hclog.Logger) error {
 	// Write user-data to a temp file.
 	tmpDir, err := os.MkdirTemp("", "cloud-init-*")
 	if err != nil {
@@ -34,13 +34,13 @@ func createCloudInitISO(cloudConfig string, isoPath string, logger hclog.Logger)
 	defer os.RemoveAll(tmpDir)
 
 	userDataPath := filepath.Join(tmpDir, "user-data")
-	if err := os.WriteFile(userDataPath, []byte(cloudConfig), 0o600); err != nil {
+	if err := os.WriteFile(userDataPath, []byte(cloudInitConfig.UserData), 0o600); err != nil {
 		return fmt.Errorf("write user-data: %w", err)
 	}
 
 	// cloud-init's NoCloud datasource requires a meta-data file even if empty.
 	metaDataPath := filepath.Join(tmpDir, "meta-data")
-	if err := os.WriteFile(metaDataPath, []byte(""), 0o600); err != nil {
+	if err := os.WriteFile(metaDataPath, []byte(cloudInitConfig.MetaData), 0o600); err != nil {
 		return fmt.Errorf("write meta-data: %w", err)
 	}
 
