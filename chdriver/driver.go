@@ -359,8 +359,8 @@ func (d *CloudHypervisorDriverPlugin) buildFingerprint() *drivers.Fingerprint {
 			HealthDescription: fmt.Sprintf("cloud-hypervisor binary at path %s is not executable: %v", binary, err),
 		}
 	}
-	// \d+\.\d+\.\d+
-	date := regexp.MustCompile(`\d+\.\d+\.\d+`).FindString(string(output))
+	// \d+\.\d+(\.\d+)?
+	date := regexp.MustCompile(`\d+\.\d+(\.\d+)?`).FindString(string(output))
 	if date == "" {
 		return &drivers.Fingerprint{
 			Health:            drivers.HealthStateUnhealthy,
