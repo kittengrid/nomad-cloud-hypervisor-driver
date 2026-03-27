@@ -109,8 +109,10 @@ var (
 			"mode": hclspec.NewAttr("mode", "string", true),
 		})),
 		"network": hclspec.NewBlockList("network", hclspec.NewObject(map[string]*hclspec.Spec{
-			"mac": hclspec.NewAttr("mac", "string", true),
-			"tap": hclspec.NewAttr("tap", "string", true),
+			"mac":                hclspec.NewAttr("mac", "string", true),
+			"tap":                hclspec.NewAttr("tap", "string", true),
+			"auto-tuntap":        hclspec.NewAttr("auto-tuntap", "bool", false),
+			"auto-tuntap-bridge": hclspec.NewAttr("auto-tuntap-bridge", "string", false),
 		})),
 		// cloud_init is an optional inline cloud-config string.  When set the
 		// driver writes the content to a file, generates a NoCloud seed ISO
@@ -176,8 +178,10 @@ type TaskConsoleConfig struct {
 }
 
 type TaskNetworkConfig struct {
-	Mac string `codec:"mac"`
-	Tap string `codec:"tap"`
+	Mac              string `codec:"mac"`
+	Tap              string `codec:"tap"`
+	AutoTuntap       bool   `codec:"auto-tuntap"`
+	AutoTuntapBridge string `codec:"auto-tuntap-bridge"`
 }
 
 type CloudInit struct {
@@ -401,8 +405,6 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 	exec, pluginClient, err := executor.CreateExecutor(logger, d.nomadConfig, executorConfig)
 
 	logger.Info("executor created for task", "task_id", cfg.ID, "log_file", pluginLogFile)
-	// buildCHargs
-	d.logger.Info("args", "args", buildCHArgs(driverConfig, ""))
 
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create executor: %v", err)

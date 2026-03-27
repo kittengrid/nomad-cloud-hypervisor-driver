@@ -6,6 +6,7 @@ package chdriver
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/hashicorp/nomad/drivers/shared/executor"
@@ -38,9 +39,14 @@ func startCloudHypervisor(
 	// Remove any stale socket left by a previous crash.
 	_ = os.Remove(socketBasePath + ".sock")
 
+	args, err := buildCHArgs(cfg, socketBasePath, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("build cloud-hypervisor args: %w", err)
+	}
+
 	execCmd := &executor.ExecCommand{
 		Cmd:        binaryPath,
-		Args:       buildCHArgs(cfg, socketBasePath),
+		Args:       args,
 		StdoutPath: stdoutPath,
 		StderrPath: stderrPath,
 	}
@@ -58,7 +64,7 @@ func startCloudHypervisor(
 }
 
 // buildCHArgs constructs the CLI argument list for cloud-hypervisor from a TaskConfig.
-func buildCHArgs(cfg TaskConfig, socketBasePath string) []string {
+func buildCHArgs(cfg TaskConfig, socketBasePath string, taskID string) ([]string, error) {
 	args := []string{"--api-socket", "path=" + socketBasePath + ".sock"}
 
 	args = append(args, "--serial", "socket="+socketBasePath+".serial.sock")
@@ -93,9 +99,42 @@ func buildCHArgs(cfg TaskConfig, socketBasePath string) []string {
 
 	networkArgs := make([]string, 0)
 	for _, net := range cfg.Network {
-		netArgEntry := "tap=" + net.Tap
-		if net.Mac != "" {
-			netArgEntry += ",mac=" + net.Mac
+		netArgEntry := ""
+
+		if net.AutoTuntap {
+			// Set up the tap device in linux
+			command := fmt.Sprintf("ip tuntap add dev tap-%s mode tap", taskID)
+			if err := exec.Command(command); err != nil {
+				fmt.Printf("Failed to create tap device: %v\n", err)
+
+				return nil, fmt.Errorf("create tap device: %w", err)
+			}
+
+			command = fmt.Sprintf("ip link set tap-%s master %s", taskID, net.AutoTuntapBridge)
+			if err := exec.Command(command); err != nil {
+				fmt.Printf("Failed to set tap device master: %v\n", err)
+
+				return nil, fmt.Errorf("set tap device master: %w", err)
+			}
+			command = fmt.Sprintf("ip link set tap-%s up", taskID)
+			if err := exec.Command(command); err != nil {
+				fmt.Printf("Failed to set tap device up: %v\n", err)
+
+				return nil, fmt.Errorf("set tap device up: %w", err)
+			}
+			command = fmt.Sprintf("bridge link set dev tap-%s isolated on", taskID)
+			if err := exec.Command(command); err != nil {
+				fmt.Printf("Failed to set tap device isolated: %v\n", err)
+
+				return nil, fmt.Errorf("set tap device isolated: %w", err)
+			}
+
+			netArgEntry = "tap=tap-" + taskID
+		} else {
+			netArgEntry = "tap=" + net.Tap
+			if net.Mac != "" {
+				netArgEntry += ",mac=" + net.Mac
+			}
 		}
 		networkArgs = append(networkArgs, netArgEntry)
 	}
@@ -120,5 +159,5 @@ func buildCHArgs(cfg TaskConfig, socketBasePath string) []string {
 		args = append(args, "--console", cfg.Console.Mode)
 	}
 
-	return args
+	return args, nil
 }
