@@ -199,6 +199,7 @@ type TaskConfig struct {
 	Console   TaskConsoleConfig   `codec:"console"`
 	Network   []TaskNetworkConfig `codec:"network"`
 	CloudInit *CloudInit          `codec:"cloud-init"`
+	Resources *drivers.Resources  `codec:"resources"`
 }
 
 // TaskState is the runtime state which is encoded in the handle returned to
@@ -425,14 +426,23 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 			Readonly: true,
 		})
 	}
+
+	// We have to set up the net devices if the config specifies AutoTuntap
+	for _, net := range driverConfig.Network {
+		if net.AutoTuntap {
+			if err := NewAutoTunTapIfaceFromNetConfig(&net, cfg.ID, d.logger).Up(); err != nil {
+				return nil, nil, fmt.Errorf("set up auto-tuntap: %w", err)
+			}
+		}
+	}
+
 	proc, err := startCloudHypervisor(
 		d.config.CloudHypervisorBinaryPath,
 		d.config.CloudHypervisorSocketDir,
-		cfg.ID,
-		cfg.StdoutPath,
-		cfg.StderrPath,
+		cfg,
 		driverConfig,
 		exec,
+		d.logger,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to start cloud-hypervisor: %v", err)
@@ -548,7 +558,7 @@ func (d *CloudHypervisorDriverPlugin) handleWait(ctx context.Context, handle *ta
 }
 
 // StopTask stops a running task with the given signal and within the timeout window.
-func (d *CloudHypervisorDriverPlugin) StopTask(taskID string, timeout time.Duration, signal string) error {
+func (d *CloudHypervisorDriverPlugin) StopTask(taskID string, timeout time.Duration, signal string) (err error) {
 	handle, ok := d.tasks.Get(taskID)
 	if !ok {
 		return drivers.ErrTaskNotFound
@@ -573,6 +583,7 @@ func (d *CloudHypervisorDriverPlugin) StopTask(taskID string, timeout time.Durat
 
 	// Grace period elapsed — force kill.
 	_ = syscall.Kill(handle.pid, syscall.SIGKILL)
+
 	return nil
 }
 
@@ -582,6 +593,19 @@ func (d *CloudHypervisorDriverPlugin) DestroyTask(taskID string, force bool) err
 	if !ok {
 		return drivers.ErrTaskNotFound
 	}
+
+	defer func() {
+		// We have to delete net devices if the config specifies AutoTuntap
+		for _, net := range handle.driverConfig.Network {
+			if net.AutoTuntap {
+				d.logger.Info("cleaning up auto-tuntap device", "task_id", taskID, "iface", net)
+
+				if err := NewAutoTunTapIfaceFromNetConfig(&net, handle.taskConfig.ID, d.logger).Down(); err != nil {
+					err = fmt.Errorf("drop auto-tuntap: %w", err)
+				}
+			}
+		}
+	}()
 
 	if handle.IsRunning() && !force {
 		return errors.New("cannot destroy running task")

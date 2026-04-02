@@ -6,11 +6,11 @@ package chdriver
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/nomad/drivers/shared/executor"
+	"github.com/hashicorp/nomad/plugins/drivers"
 )
 
 // CloudHypervisorProcess holds the identifiers needed to track a running
@@ -26,11 +26,16 @@ type CloudHypervisorProcess struct {
 // when the driver process dies the child is re-parented to init rather than killed.
 // The API socket is created at <socketDir>/<taskID>.sock.
 func startCloudHypervisor(
-	binaryPath, socketDir, taskID string,
-	stdoutPath, stderrPath string,
-	cfg TaskConfig,
+	binaryPath, socketDir string,
+	cfg *drivers.TaskConfig,
+	driverConfig TaskConfig,
 	exec executor.Executor,
+	logger hclog.Logger,
 ) (*CloudHypervisorProcess, error) {
+	taskID := cfg.ID
+	stdoutPath := cfg.StdoutPath
+	stderrPath := cfg.StderrPath
+
 	socketBasePath := filepath.Join(socketDir, filepath.Base(taskID))
 
 	if err := os.MkdirAll(socketDir, 0o755); err != nil {
@@ -40,7 +45,7 @@ func startCloudHypervisor(
 	// Remove any stale socket left by a previous crash.
 	_ = os.Remove(socketBasePath + ".sock")
 
-	args, err := buildCHArgs(cfg, socketBasePath, taskID)
+	args, err := buildCHArgs(driverConfig, socketBasePath, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("build cloud-hypervisor args: %w", err)
 	}
@@ -50,7 +55,9 @@ func startCloudHypervisor(
 		Args:       args,
 		StdoutPath: stdoutPath,
 		StderrPath: stderrPath,
+		Resources:  cfg.Resources,
 	}
+	logger.Debug("launching cloud-hypervisor", "cmd", execCmd.Cmd, "args", execCmd.Args, "stdout", execCmd.StdoutPath, "stderr", execCmd.StderrPath)
 
 	ps, err := exec.Launch(execCmd)
 	if err != nil {
@@ -103,38 +110,11 @@ func buildCHArgs(cfg TaskConfig, socketBasePath string, taskID string) ([]string
 		netArgEntry := ""
 
 		if net.AutoTuntap {
-			// Taskid has the form tap-6ca4e8fe-e8fb-0491-d383-2caaf2537d6c/kittenvisor/5a9094d9
-			// we hey the last part of the path to use as the tap device name, so we get tap-5a9094d9
-			ifaceName := fmt.Sprintf("tap-%s", taskID[strings.LastIndex(taskID, "/")+1:])
-
-			// Set up the tap device in linux
-			command := fmt.Sprintf("ip tuntap add dev %s mode tap", ifaceName)
-			if err := exec.Command(command); err != nil {
-				fmt.Printf("Failed to create tap device: %v\n", err)
-
-				return nil, fmt.Errorf("create tap device: %w", err)
-			}
-
-			command = fmt.Sprintf("ip link set %s master %s", ifaceName, net.AutoTuntapBridge)
-			if err := exec.Command(command); err != nil {
-				fmt.Printf("Failed to set tap device master: %v\n", err)
-
-				return nil, fmt.Errorf("set tap device master: %w", err)
-			}
-			command = fmt.Sprintf("ip link set %s up", ifaceName)
-			if err := exec.Command(command); err != nil {
-				fmt.Printf("Failed to set tap device up: %v\n", err)
-
-				return nil, fmt.Errorf("set tap device up: %w", err)
-			}
-			command = fmt.Sprintf("bridge link set dev %s isolated on", ifaceName)
-			if err := exec.Command(command); err != nil {
-				fmt.Printf("Failed to set tap device isolated: %v\n", err)
-
-				return nil, fmt.Errorf("set tap device isolated: %w", err)
-			}
-
+			ifaceName := TaskIDToTapIfaceName(taskID)
 			netArgEntry = "tap=" + ifaceName
+			if net.Mac != "" {
+				netArgEntry += ",mac=" + net.Mac
+			}
 		} else {
 			netArgEntry = "tap=" + net.Tap
 			if net.Mac != "" {
