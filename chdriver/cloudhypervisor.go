@@ -97,6 +97,9 @@ func buildCHArgs(cfg TaskConfig, socketBasePath string, taskID string) ([]string
 		if disk.Readonly {
 			diskArgEntry += ",readonly=on"
 		}
+		if disk.EphemeralOverlay {
+			diskArgEntry += ",backing_files=on"
+		}
 		diskArgs = append(diskArgs, diskArgEntry)
 	}
 

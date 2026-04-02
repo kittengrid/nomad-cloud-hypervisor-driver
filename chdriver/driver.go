@@ -94,9 +94,10 @@ var (
 			"cmdline":   hclspec.NewAttr("cmdline", "string", false),
 		})),
 		"disk": hclspec.NewBlockList("disk", hclspec.NewObject(map[string]*hclspec.Spec{
-			"path":       hclspec.NewAttr("path", "string", true),
-			"image_type": hclspec.NewAttr("image_type", "string", false),
-			"readonly":   hclspec.NewAttr("readonly", "bool", false),
+			"path":              hclspec.NewAttr("path", "string", true),
+			"image_type":        hclspec.NewAttr("image_type", "string", false),
+			"readonly":          hclspec.NewAttr("readonly", "bool", false),
+			"ephemeral_overlay": hclspec.NewAttr("ephemeral_overlay", "bool", false),
 		})),
 		"cpus": hclspec.NewBlock("cpus", true, hclspec.NewObject(map[string]*hclspec.Spec{
 			"boot_vcpus": hclspec.NewAttr("boot_vcpus", "number", true),
@@ -156,9 +157,10 @@ type TaskPayloadConfig struct {
 
 // TaskDiskConfig corresponds to DiskConfig in chtypes.
 type TaskDiskConfig struct {
-	Path      string `codec:"path"`
-	ImageType string `codec:"image_type"`
-	Readonly  bool   `codec:"readonly"`
+	Path             string `codec:"path"`
+	ImageType        string `codec:"image_type"`
+	Readonly         bool   `codec:"readonly"`
+	EphemeralOverlay bool   `codec:"ephemeral_overlay"`
 }
 
 // TaskCpusConfig corresponds to CpusConfig in chtypes (required fields only).
@@ -433,6 +435,19 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 			if err := NewAutoTunTapIfaceFromNetConfig(&net, cfg.ID, d.logger).Up(); err != nil {
 				return nil, nil, fmt.Errorf("set up auto-tuntap: %w", err)
 			}
+		}
+	}
+
+	// Now the disks, in case any of them are ephemeral overlays that need to be generated before starting
+	for i, disk := range driverConfig.Disk {
+		if disk.EphemeralOverlay {
+			overlayPath := filepath.Join(cfg.TaskDir().LocalDir, fmt.Sprintf("overlay-%d.img", i))
+			if err := NewOverlayDiskFromDiskConfig(disk, overlayPath).Create(); err != nil {
+				return nil, nil, fmt.Errorf("failed to create ephemeral overlay: %v", err)
+			}
+			// Update the disk path to point to the overlay, which is what startCloudHypervisor will use.
+			driverConfig.Disk[i].Path = overlayPath
+			driverConfig.Disk[i].ImageType = "qcow2"
 		}
 	}
 
