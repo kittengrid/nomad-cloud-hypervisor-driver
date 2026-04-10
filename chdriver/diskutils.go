@@ -69,6 +69,7 @@ func PullIntoCache(ctx context.Context, opts PullOptions) (*PulledArtifact, erro
 	if err != nil {
 		return nil, fmt.Errorf("create repository: %w", err)
 	}
+	repo.PlainHTTP = isLocalRegistry(repo.Reference.Registry)
 
 	store, err := credentials.NewStoreFromDocker(credentials.StoreOptions{})
 	if err != nil {
