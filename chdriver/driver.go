@@ -81,6 +81,10 @@ var (
 			hclspec.NewAttr("cloud-hypervisor-socket-dir", "string", false),
 			hclspec.NewLiteral(`"/run/nomad-ch-driver"`),
 		),
+		"cache-dir": hclspec.NewDefault(
+			hclspec.NewAttr("cache-dir", "string", false),
+			hclspec.NewLiteral(`"/run/nomad-ch-driver"`),
+		),
 	})
 
 	// taskConfigSpec is the specification of the plugin's configuration for
@@ -94,10 +98,11 @@ var (
 			"cmdline":   hclspec.NewAttr("cmdline", "string", false),
 		})),
 		"disk": hclspec.NewBlockList("disk", hclspec.NewObject(map[string]*hclspec.Spec{
-			"path":              hclspec.NewAttr("path", "string", true),
+			"path":              hclspec.NewAttr("path", "string", false),
 			"image_type":        hclspec.NewAttr("image_type", "string", false),
 			"readonly":          hclspec.NewAttr("readonly", "bool", false),
 			"ephemeral_overlay": hclspec.NewAttr("ephemeral_overlay", "bool", false),
+			"oci_image":         hclspec.NewAttr("oci_image", "string", false),
 		})),
 		"cpus": hclspec.NewBlock("cpus", true, hclspec.NewObject(map[string]*hclspec.Spec{
 			"boot_vcpus": hclspec.NewAttr("boot_vcpus", "number", true),
@@ -146,6 +151,7 @@ type Config struct {
 	// passed by the Nomad agent into Go contructs.
 	CloudHypervisorBinaryPath string `codec:"cloud-hypervisor-binary-path"`
 	CloudHypervisorSocketDir  string `codec:"cloud-hypervisor-socket-dir"`
+	CacheDir                  string `codec:"cache-dir"`
 }
 
 // TaskPayloadConfig corresponds to PayloadConfig in chtypes.
@@ -161,6 +167,7 @@ type TaskDiskConfig struct {
 	ImageType        string `codec:"image_type"`
 	Readonly         bool   `codec:"readonly"`
 	EphemeralOverlay bool   `codec:"ephemeral_overlay"`
+	OCIImage         string `codec:"oci_image"`
 }
 
 // TaskCpusConfig corresponds to CpusConfig in chtypes (required fields only).
@@ -378,6 +385,7 @@ func (d *CloudHypervisorDriverPlugin) buildFingerprint() *drivers.Fingerprint {
 	fp.Attributes["driver.cloud-hypervisor.cloud-hypervisor_version"] = structs.NewStringAttribute(date)
 	fp.Attributes["driver.cloud-hypervisor.cloud-hypervisor_path"] = structs.NewStringAttribute(binary)
 	fp.Attributes["driver.cloud-hypervisor.cloud-hypervisor_socket_dir"] = structs.NewStringAttribute(d.config.CloudHypervisorSocketDir)
+	fp.Attributes["driver.cloud-hypervisor.cache-dir"] = structs.NewStringAttribute(d.config.CacheDir)
 
 	return fp
 }
@@ -440,6 +448,27 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 
 	// Now the disks, in case any of them are ephemeral overlays that need to be generated before starting
 	for i, disk := range driverConfig.Disk {
+		if disk.OCIImage != "" {
+			if err := os.MkdirAll(d.config.CacheDir, 0o755); err != nil {
+				return nil, nil, fmt.Errorf("create socket dir: %w", err)
+			}
+
+			// If the disk is specified as an OCI image, we need to pull it and convert it to a qcow2 image before starting the VM.
+			pullOptions := PullOptions{
+				Reference: disk.OCIImage,
+				CacheDir:  d.config.CacheDir,
+			}
+
+			ociImagePath, err := PullIntoCache(context.Background(), pullOptions)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to pull OCI image: %v", err)
+			}
+
+			// Update the disk path to point to the pulled image, which is what startCloudHypervisor will use.
+			driverConfig.Disk[i].Path = ociImagePath.WorkDir + "/rootfs.qcow2"
+			driverConfig.Disk[i].ImageType = "qcow2"
+		}
+
 		if disk.EphemeralOverlay {
 			overlayPath := filepath.Join(cfg.TaskDir().LocalDir, fmt.Sprintf("overlay-%d.img", i))
 			if err := NewOverlayDiskFromDiskConfig(disk, overlayPath).Create(); err != nil {
