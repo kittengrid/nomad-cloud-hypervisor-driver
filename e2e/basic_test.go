@@ -34,14 +34,25 @@ func pause() {
 	time.Sleep(2 * time.Second)
 }
 
-func setup(t *testing.T) context.Context {
+func setup(t *testing.T) (context.Context, *NomadAgent) {
+	requireRoot(t)
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	t.Cleanup(func() {
-		run(t, ctx, "nomad", "system", "gc")
 		cancel()
 	})
+
+	nomad := NewNomadAgent()
+	if err := nomad.Start(t); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() {
+		_ = nomad.Stop(t)
+	})
+
 	pause()
-	return ctx
+	return ctx, nomad
 }
 
 func run(t *testing.T, ctx context.Context, command string, args ...string) string {
@@ -86,15 +97,16 @@ func requireEnv(t *testing.T, key string) string {
 }
 
 func TestPluginStarts(t *testing.T) {
-	ctx := setup(t)
+	ctx, _ := setup(t)
 
-	status := run(t, ctx, "nomad", "node", "status", "-self", "-verbose")
 	pluginRe := regexp.MustCompile(`cloud-hypervisor\s+true\s+true\s+Healthy`)
-	must.RegexMatch(t, pluginRe, status)
+	waitFor(t, 30*time.Second, func() string {
+		return run(t, ctx, "nomad", "node", "status", "-self", "-verbose")
+	}, pluginRe)
 }
 
 func TestBasicVM(t *testing.T) {
-	ctx := setup(t)
+	ctx, _ := setup(t)
 	defer purge(t, ctx, "ch-basic")()
 
 	kernel := requireEnv(t, "CH_KERNEL")
@@ -110,9 +122,24 @@ func TestBasicVM(t *testing.T) {
 		"./jobs/basic.hcl",
 	)
 
-	status := run(t, ctx, "nomad", "job", "status", "ch-basic")
-	must.RegexMatch(t, runningRe, status)
+	waitFor(t, 60*time.Second, func() string {
+		return run(t, ctx, "nomad", "job", "status", "ch-basic")
+	}, runningRe)
 
 	stopOutput := run(t, ctx, "nomad", "job", "stop", "ch-basic")
 	must.StrContains(t, stopOutput, `finished with status "complete"`)
+}
+
+func waitFor(t *testing.T, timeout time.Duration, fn func() string, re *regexp.Regexp) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last string
+	for time.Now().Before(deadline) {
+		last = fn()
+		if re.MatchString(last) {
+			return
+		}
+		time.Sleep(1 * time.Second)
+	}
+	t.Fatalf("timed out waiting for %s; last output:\n%s", re.String(), last)
 }
