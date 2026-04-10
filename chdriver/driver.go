@@ -93,10 +93,11 @@ var (
 	// when a job is submitted.
 	taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
 		"payload": hclspec.NewBlock("payload", true, hclspec.NewObject(map[string]*hclspec.Spec{
-			"kernel":    hclspec.NewAttr("kernel", "string", true),
-			"initramfs": hclspec.NewAttr("initramfs", "string", true),
+			"kernel":    hclspec.NewAttr("kernel", "string", false),
+			"initramfs": hclspec.NewAttr("initramfs", "string", false),
 			"cmdline":   hclspec.NewAttr("cmdline", "string", false),
 		})),
+		"oci_image": hclspec.NewAttr("oci_image", "string", false),
 		"disk": hclspec.NewBlockList("disk", hclspec.NewObject(map[string]*hclspec.Spec{
 			"path":              hclspec.NewAttr("path", "string", false),
 			"image_type":        hclspec.NewAttr("image_type", "string", false),
@@ -188,6 +189,7 @@ type TaskConfig struct {
 	Console   TaskConsoleConfig   `codec:"console"`
 	Network   []TaskNetworkConfig `codec:"network"`
 	CloudInit *CloudInit          `codec:"cloud-init"`
+	OCIImage  string              `codec:"oci_image"`
 }
 
 // TaskState is the runtime state which is encoded in the handle returned to
@@ -378,6 +380,10 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 	var driverConfig TaskConfig
 	if err := cfg.DecodeDriverConfig(&driverConfig); err != nil {
 		return nil, nil, fmt.Errorf("failed to decode driver config: %v", err)
+	}
+
+	if err := resolveOCIPayload(d.ctx, &driverConfig, d.config.CacheDir, d.logger); err != nil {
+		return nil, nil, fmt.Errorf("resolve OCI payload: %v", err)
 	}
 
 	d.logger.Info("starting task", "driver_cfg", hclog.Fmt("%+v", driverConfig))
