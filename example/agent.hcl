@@ -14,6 +14,7 @@ plugin "cloud-hypervisor-driver" {
   config {
     cloud-hypervisor-binary-path = "/usr/bin/cloud-hypervisor"
     cloud-hypervisor-socket-dir  = "/tmp/nomad-ch"
+    cache-dir = "/tmp/nomad-ch-cache"
   }
 }
 telemetry {

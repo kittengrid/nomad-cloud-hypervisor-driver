@@ -45,7 +45,7 @@ func startCloudHypervisor(
 	// Remove any stale socket left by a previous crash.
 	_ = os.Remove(socketBasePath + ".sock")
 
-	args, err := buildCHArgs(driverConfig, socketBasePath, taskID)
+	args, err := buildCHArgs(driverConfig, cfg.Resources, socketBasePath, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("build cloud-hypervisor args: %w", err)
 	}
@@ -71,8 +71,9 @@ func startCloudHypervisor(
 	}, nil
 }
 
-// buildCHArgs constructs the CLI argument list for cloud-hypervisor from a TaskConfig.
-func buildCHArgs(cfg TaskConfig, socketBasePath string, taskID string) ([]string, error) {
+// buildCHArgs constructs the CLI argument list for cloud-hypervisor from a TaskConfig
+// and the Nomad-allocated resources (used to derive vCPU count and memory size).
+func buildCHArgs(cfg TaskConfig, resources *drivers.Resources, socketBasePath string, taskID string) ([]string, error) {
 	args := []string{"--api-socket", "path=" + socketBasePath + ".sock"}
 
 	args = append(args, "--serial", "socket="+socketBasePath+".serial.sock")
@@ -131,16 +132,11 @@ func buildCHArgs(cfg TaskConfig, socketBasePath string, taskID string) ([]string
 		args = append(args, networkArgs...)
 	}
 
-	if cfg.Cpus.BootVcpus > 0 {
-		cpuArg := fmt.Sprintf("boot=%d", cfg.Cpus.BootVcpus)
-		if cfg.Cpus.MaxVcpus > cfg.Cpus.BootVcpus {
-			cpuArg += fmt.Sprintf(",max=%d", cfg.Cpus.MaxVcpus)
-		}
-		args = append(args, "--cpus", cpuArg)
-	}
+	vcpus := vcpusFromResources(resources)
+	args = append(args, "--cpus", fmt.Sprintf("boot=%d", vcpus))
 
-	if cfg.Memory.Size > 0 {
-		args = append(args, "--memory", fmt.Sprintf("size=%d", cfg.Memory.Size))
+	if memBytes := memoryBytesFromResources(resources); memBytes > 0 {
+		args = append(args, "--memory", fmt.Sprintf("size=%d", memBytes))
 	}
 
 	if cfg.Console.Mode != "" {
@@ -148,4 +144,32 @@ func buildCHArgs(cfg TaskConfig, socketBasePath string, taskID string) ([]string
 	}
 
 	return args, nil
+}
+
+// vcpusFromResources derives the vCPU count to pass to cloud-hypervisor.
+// When the task uses dedicated cores (resources { cores = N }), the length of
+// ReservedCores gives the exact count.  When only a CPU-share budget is set
+// (resources { cpu = MHz }), we approximate 1 vCPU per 1000 MHz, with a
+// minimum of 1.
+func vcpusFromResources(r *drivers.Resources) int {
+	if r == nil || r.NomadResources == nil {
+		return 1
+	}
+	cpu := r.NomadResources.Cpu
+	if len(cpu.ReservedCores) > 0 {
+		return len(cpu.ReservedCores)
+	}
+	if cpu.CpuShares > 0 {
+		return max(1, int(cpu.CpuShares)/1000)
+	}
+	return 1
+}
+
+// memoryBytesFromResources converts the Nomad memory allocation (MB) to bytes
+// for the cloud-hypervisor --memory flag.
+func memoryBytesFromResources(r *drivers.Resources) int64 {
+	if r == nil || r.NomadResources == nil {
+		return 0
+	}
+	return r.NomadResources.Memory.MemoryMB * 1024 * 1024
 }

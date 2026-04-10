@@ -104,13 +104,6 @@ var (
 			"ephemeral_overlay": hclspec.NewAttr("ephemeral_overlay", "bool", false),
 			"oci_image":         hclspec.NewAttr("oci_image", "string", false),
 		})),
-		"cpus": hclspec.NewBlock("cpus", true, hclspec.NewObject(map[string]*hclspec.Spec{
-			"boot_vcpus": hclspec.NewAttr("boot_vcpus", "number", true),
-			"max_vcpus":  hclspec.NewAttr("max_vcpus", "number", true),
-		})),
-		"memory": hclspec.NewBlock("memory", true, hclspec.NewObject(map[string]*hclspec.Spec{
-			"size": hclspec.NewAttr("size", "number", true),
-		})),
 		"console": hclspec.NewBlock("console", true, hclspec.NewObject(map[string]*hclspec.Spec{
 			"mode": hclspec.NewAttr("mode", "string", true),
 		})),
@@ -170,17 +163,6 @@ type TaskDiskConfig struct {
 	OCIImage         string `codec:"oci_image"`
 }
 
-// TaskCpusConfig corresponds to CpusConfig in chtypes (required fields only).
-type TaskCpusConfig struct {
-	BootVcpus int `codec:"boot_vcpus"`
-	MaxVcpus  int `codec:"max_vcpus"`
-}
-
-// TaskMemoryConfig corresponds to MemoryConfig in chtypes (required fields only).
-type TaskMemoryConfig struct {
-	Size int64 `codec:"size"`
-}
-
 // TaskConsoleConfig corresponds to ConsoleConfig in chtypes (required fields only).
 type TaskConsoleConfig struct {
 	Mode string `codec:"mode"`
@@ -203,12 +185,9 @@ type CloudInit struct {
 type TaskConfig struct {
 	Payload   TaskPayloadConfig   `codec:"payload"`
 	Disk      []TaskDiskConfig    `codec:"disk"`
-	Cpus      TaskCpusConfig      `codec:"cpus"`
-	Memory    TaskMemoryConfig    `codec:"memory"`
 	Console   TaskConsoleConfig   `codec:"console"`
 	Network   []TaskNetworkConfig `codec:"network"`
 	CloudInit *CloudInit          `codec:"cloud-init"`
-	Resources *drivers.Resources  `codec:"resources"`
 }
 
 // TaskState is the runtime state which is encoded in the handle returned to
@@ -719,7 +698,7 @@ func (d *CloudHypervisorDriverPlugin) TaskStats(
 						Measured: []string{"Usage"},
 					}
 					memoryMax := drivers.MemoryStats{
-						MaxUsage: uint64(handle.driverConfig.Memory.Size),
+						MaxUsage: uint64(memoryBytesFromResources(handle.taskConfig.Resources)),
 						Measured: []string{"MaxUsage"},
 					}
 					usage.ResourceUsage.MemoryStats.Add(&usageStats)
