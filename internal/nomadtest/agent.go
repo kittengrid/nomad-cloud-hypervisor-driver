@@ -19,13 +19,14 @@ import (
 	nomadapi "github.com/hashicorp/nomad/api"
 )
 
+const nomadBinary = "nomad"
+
 // NomadConfig controls how a Nomad agent is started in e2e tests.
 //
 // If DataDir is empty, the agent is started with -dev and no data dir is
 // created. If DataDir is set, the agent is started normally and the data dir
 // is left intact so tests can stop/start Nomad while preserving state.
 type NomadConfig struct {
-	Binary      string
 	ConfigPath  string
 	PluginDir   string
 	DataDir     string
@@ -85,7 +86,6 @@ type NomadAgent struct {
 func NewNomadAgent() *NomadAgent {
 	return &NomadAgent{
 		cfg: NomadConfig{
-			Binary:      "nomad",
 			ConfigPath:  filepath.Join(".", "agent.hcl"),
 			Address:     "127.0.0.1:4646",
 			StartupWait: 60 * time.Second,
@@ -102,9 +102,6 @@ func (n *NomadAgent) Start(t testing.TB) error {
 		return nil
 	}
 
-	if n.cfg.Binary == "" {
-		n.cfg.Binary = "nomad"
-	}
 	if n.cfg.ConfigPath == "" {
 		n.cfg.ConfigPath = filepath.Join(".", "agent.hcl")
 	}
@@ -126,62 +123,29 @@ func (n *NomadAgent) Start(t testing.TB) error {
 		n.cfg.StartupWait = 60 * time.Second
 	}
 
-	configPath, err := filepath.Abs(n.cfg.ConfigPath)
+	configPath, baseConfig, err := n.resolveConfig()
 	if err != nil {
-		return fmt.Errorf("resolve nomad config path: %w", err)
-	}
-	baseConfig, err := os.ReadFile(configPath)
-	if err != nil {
-		return fmt.Errorf("read nomad config %q: %w", configPath, err)
+		return err
 	}
 
-	finalConfigPath := configPath
-	if n.cfg.DataDir != "" {
-		if err := os.MkdirAll(n.cfg.DataDir, 0o755); err != nil {
-			return fmt.Errorf("create nomad data dir: %w", err)
-		}
-		configFile, err := os.CreateTemp("", "nomad-ch-agent-*.hcl")
-		if err != nil {
-			return fmt.Errorf("create temp nomad config: %w", err)
-		}
-		n.configFile = configFile.Name()
-		if _, err := fmt.Fprintf(configFile, "data_dir = %q\n\n%s", n.cfg.DataDir, string(baseConfig)); err != nil {
-			_ = configFile.Close()
-			return fmt.Errorf("write temp nomad config: %w", err)
-		}
-		if err := configFile.Close(); err != nil {
-			return fmt.Errorf("close temp nomad config: %w", err)
-		}
-		finalConfigPath = n.configFile
-	}
-
-	stdoutFile, err := os.CreateTemp("", "nomad-ch-stdout-*.log")
+	finalConfigPath, err := n.setupDataDir(configPath, baseConfig)
 	if err != nil {
-		return fmt.Errorf("create nomad stdout log: %w", err)
+		return err
 	}
-	stderrFile, err := os.CreateTemp("", "nomad-ch-stderr-*.log")
-	if err != nil {
-		_ = stdoutFile.Close()
-		return fmt.Errorf("create nomad stderr log: %w", err)
-	}
-	n.stdoutPath = stdoutFile.Name()
-	n.stderrPath = stderrFile.Name()
-	_ = stdoutFile.Close()
-	_ = stderrFile.Close()
 
 	args := []string{"agent", "-config=" + finalConfigPath, "-plugin-dir=" + n.cfg.PluginDir}
 	if n.cfg.DataDir == "" {
 		args = append(args, "-dev")
 	}
 
-	n.cmd = exec.Command(n.cfg.Binary, args...)
-	n.cmd.Stdout, err = os.OpenFile(n.stdoutPath, os.O_WRONLY|os.O_APPEND, 0)
+	n.cmd = exec.Command(nomadBinary, args...)
+	n.cmd.Stdout, err = n.setupStream("stdout")
 	if err != nil {
-		return fmt.Errorf("open stdout log: %w", err)
+		return err
 	}
-	n.cmd.Stderr, err = os.OpenFile(n.stderrPath, os.O_WRONLY|os.O_APPEND, 0)
+	n.cmd.Stderr, err = n.setupStream("stderr")
 	if err != nil {
-		return fmt.Errorf("open stderr log: %w", err)
+		return err
 	}
 
 	if err := n.cmd.Start(); err != nil {
@@ -356,6 +320,62 @@ func (n *NomadAgent) AllocLogs(t testing.TB, ctx context.Context, allocID, task 
 		Stdout: n.readAllocLog(t, ctx, client, alloc, task, "stdout"),
 		Stderr: n.readAllocLog(t, ctx, client, alloc, task, "stderr"),
 	}
+}
+
+// setupStream creates a temporary log file for the given stream name
+// ("stdout" or "stderr"), stores its path on the agent, and returns the open
+// file ready to be assigned to cmd.Stdout / cmd.Stderr.
+func (n *NomadAgent) setupStream(name string) (*os.File, error) {
+	f, err := os.CreateTemp("", "nomad-ch-"+name+"-*.log")
+	if err != nil {
+		return nil, fmt.Errorf("create nomad %s log: %w", name, err)
+	}
+	switch name {
+	case "stdout":
+		n.stdoutPath = f.Name()
+	case "stderr":
+		n.stderrPath = f.Name()
+	}
+	return f, nil
+}
+
+// setupDataDir creates a temporary config file with the data_dir stanza
+// prepended when DataDir is set, and returns the path to use when launching
+// the agent.  If DataDir is empty, configPath is returned unchanged.
+func (n *NomadAgent) setupDataDir(configPath string, baseConfig []byte) (string, error) {
+	if n.cfg.DataDir == "" {
+		return configPath, nil
+	}
+	if err := os.MkdirAll(n.cfg.DataDir, 0o755); err != nil {
+		return "", fmt.Errorf("create nomad data dir: %w", err)
+	}
+	configFile, err := os.CreateTemp("", "nomad-ch-agent-*.hcl")
+	if err != nil {
+		return "", fmt.Errorf("create temp nomad config: %w", err)
+	}
+	n.configFile = configFile.Name()
+	if _, err := fmt.Fprintf(configFile, "data_dir = %q\n\n%s", n.cfg.DataDir, string(baseConfig)); err != nil {
+		_ = configFile.Close()
+		return "", fmt.Errorf("write temp nomad config: %w", err)
+	}
+	if err := configFile.Close(); err != nil {
+		return "", fmt.Errorf("close temp nomad config: %w", err)
+	}
+	return n.configFile, nil
+}
+
+// resolveConfig reads the agent config file and returns its absolute path and
+// raw contents.
+func (n *NomadAgent) resolveConfig() (configPath string, baseConfig []byte, err error) {
+	configPath, err = filepath.Abs(n.cfg.ConfigPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve nomad config path: %w", err)
+	}
+	baseConfig, err = os.ReadFile(configPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("read nomad config %q: %w", configPath, err)
+	}
+	return configPath, baseConfig, nil
 }
 
 func (n *NomadAgent) running() bool {
