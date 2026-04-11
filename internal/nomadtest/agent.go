@@ -86,20 +86,25 @@ type NomadAgent struct {
 }
 
 // NewNomadAgent returns a NomadAgent configured with sensible defaults for the
-// local e2e setup.  PluginDir is derived from the location of this source file
-// (internal/nomadtest/agent.go → two directories up = module root).
+// local e2e setup.  Both ConfigPath and PluginDir are derived from the location
+// of this source file so the defaults are correct regardless of working directory.
 func NewNomadAgent() *NomadAgent {
 	_, thisFile, _, _ := runtime.Caller(0)
-	moduleRoot := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
+	sourceDir := filepath.Dir(thisFile)
+	moduleRoot := filepath.Dir(filepath.Dir(sourceDir))
 
 	return &NomadAgent{
 		cfg: NomadConfig{
-			ConfigPath:  filepath.Join(".", "agent.hcl"),
+			ConfigPath:  filepath.Join(sourceDir, "agent.hcl"),
 			PluginDir:   moduleRoot,
 			Address:     "127.0.0.1:4646",
 			StartupWait: 60 * time.Second,
 		},
 	}
+}
+
+func (n *NomadAgent) Address() string {
+	return n.cfg.Address
 }
 
 // Start launches the Nomad agent and waits until the expected registration
@@ -436,6 +441,19 @@ func (n *NomadAgent) resolveConfig() (configPath string, baseConfig []byte, err 
 
 func (n *NomadAgent) running() bool {
 	return n.cmd != nil && n.cmd.Process != nil && n.cmd.ProcessState == nil
+}
+
+// Status queries /v1/status/leader and returns the current cluster leader
+// address.  It is a lightweight liveness check: if Nomad is up and has
+// elected a leader the call succeeds; otherwise it fails the test.
+func (n *NomadAgent) Status(t testing.TB) string {
+	t.Helper()
+	client := n.mustClient(t)
+	leader, err := client.Status().Leader()
+	if err != nil {
+		t.Fatalf("nomad status/leader: %v", err)
+	}
+	return leader
 }
 
 func (n *NomadAgent) mustClient(t testing.TB) *nomadapi.Client {
