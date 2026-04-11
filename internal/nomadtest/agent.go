@@ -107,6 +107,11 @@ func (n *NomadAgent) Address() string {
 	return n.cfg.Address
 }
 
+func (n *NomadAgent) SetDataDir(dir string) *NomadAgent {
+	n.cfg.DataDir = dir
+	return n
+}
+
 // Start launches the Nomad agent and waits until the expected registration
 // line appears in its log output.
 func (n *NomadAgent) Start(t testing.TB) error {
@@ -133,6 +138,8 @@ func (n *NomadAgent) Start(t testing.TB) error {
 	args := []string{"agent", "-config=" + finalConfigPath, "-plugin-dir=" + n.cfg.PluginDir}
 	if n.cfg.DataDir == "" {
 		args = append(args, "-dev")
+	} else {
+		args = append(args, "-data-dir="+n.cfg.DataDir)
 	}
 
 	n.cmd = exec.Command(nomadBinary, args...)
@@ -270,6 +277,7 @@ func (n *NomadAgent) JobStatus(t testing.TB, ctx context.Context, jobName string
 		Namespace:   stringValue(job.Namespace),
 		Allocations: make([]*AllocationStatus, 0, len(allocs)),
 	}
+
 	for _, a := range allocs {
 		status.Allocations = append(status.Allocations, &AllocationStatus{
 			ID:           a.ID,
