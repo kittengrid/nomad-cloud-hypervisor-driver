@@ -8,6 +8,7 @@ package nomadtest
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -128,11 +129,11 @@ func (n *NomadAgent) Start(t testing.TB) error {
 	}
 
 	n.cmd = exec.Command(nomadBinary, args...)
-	n.cmd.Stdout, n.stdoutPath, err = n.setupStream("stdout")
+	n.cmd.Stdout, n.stdoutPath, err = n.setupStream(os.Stdout)
 	if err != nil {
 		return err
 	}
-	n.cmd.Stderr, n.stderrPath, err = n.setupStream("stderr")
+	n.cmd.Stderr, n.stderrPath, err = n.setupStream(os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -328,15 +329,20 @@ func (n *NomadAgent) validate() error {
 	return nil
 }
 
-// setupStream creates a temporary log file for the given stream name
-// ("stdout" or "stderr"), stores its path on the agent, and returns the open
-// file ready to be assigned to cmd.Stdout / cmd.Stderr.
-func (n *NomadAgent) setupStream(name string) (*os.File, string, error) {
+// setupStream creates a temporary log file named after real (e.g. os.Stdout →
+// "nomad-ch-stdout-*.log") and returns a writer for cmd.Stdout / cmd.Stderr.
+// When DEBUG=1 output is also mirrored to real so it appears in the terminal.
+func (n *NomadAgent) setupStream(real *os.File) (io.Writer, string, error) {
+	name := filepath.Base(real.Name()) // "/dev/stdout" → "stdout"
 	f, err := os.CreateTemp("", "nomad-ch-"+name+"-*.log")
 	if err != nil {
 		return nil, "", fmt.Errorf("create nomad %s log: %w", name, err)
 	}
-	return f, f.Name(), nil
+	var w io.Writer = f
+	if os.Getenv("DEBUG") == "1" {
+		w = io.MultiWriter(f, real)
+	}
+	return w, f.Name(), nil
 }
 
 // setupDataDir creates a temporary config file with the data_dir stanza
