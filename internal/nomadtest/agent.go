@@ -216,16 +216,12 @@ func (n *NomadAgent) Stop(t testing.TB) error {
 	return nil
 }
 
-// RunJob submits an HCL job file using the Nomad API client.
-// Only -var=KEY=VALUE style arguments are supported.
-func (n *NomadAgent) RunJob(t testing.TB, ctx context.Context, jobName, jobFile string, args ...string) {
+// RunJob submits an HCL job using the Nomad API client.
+// jobHCL is the raw HCL content of the job. Only -var=KEY=VALUE style arguments are supported.
+func (n *NomadAgent) RunJob(t testing.TB, ctx context.Context, jobName, jobHCL string, args ...string) {
 	t.Helper()
 
 	client := n.mustClient(t)
-	jobHCL, err := os.ReadFile(jobFile)
-	if err != nil {
-		t.Fatalf("read job file %q: %v", jobFile, err)
-	}
 
 	variables, err := parseVarArgs(args)
 	if err != nil {
@@ -233,11 +229,11 @@ func (n *NomadAgent) RunJob(t testing.TB, ctx context.Context, jobName, jobFile 
 	}
 
 	job, err := client.Jobs().ParseHCLOpts(&nomadapi.JobsParseRequest{
-		JobHCL:    string(jobHCL),
+		JobHCL:    jobHCL,
 		Variables: variables,
 	})
 	if err != nil {
-		t.Fatalf("parse job %q: %v", jobFile, err)
+		t.Fatalf("parse job HCL: %v", err)
 	}
 
 	if jobName != "" {
@@ -250,7 +246,7 @@ func (n *NomadAgent) RunJob(t testing.TB, ctx context.Context, jobName, jobFile 
 	}
 
 	if _, _, err := client.Jobs().Register(job, nil); err != nil {
-		t.Fatalf("register job %q: %v", jobFile, err)
+		t.Fatalf("register job %q: %v", jobName, err)
 	}
 }
 

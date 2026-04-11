@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kittengrid/nomad-cloud-hypervisor-driver/internal/nomadtest"
+	testutils "github.com/kittengrid/nomad-cloud-hypervisor-driver/internal/test_utils"
 	"github.com/shoenig/test/must"
 )
 
@@ -40,10 +41,10 @@ poweroff -f
 		},
 	})
 
-	nomad.RunJob(t, ctx, "ch-oci", "./jobs/oci.hcl", "-var=oci_image="+imageRef)
+	nomad.RunJob(t, ctx, "ch-oci", testutils.GetFixtureFileContents(t, "oci.hcl"), "-var=oci_image="+imageRef)
 	t.Logf("submitted job with OCI image %s", imageRef)
 
-	status := waitUntil(t, 120*time.Second, func() *nomadtest.JobStatus {
+	status := testutils.WaitUntil(t, 120*time.Second, func() *nomadtest.JobStatus {
 		t.Logf("fetching job status for ch-oci")
 		status := nomad.JobStatus(t, ctx, "ch-oci")
 		t.Logf("job status: %#v", status)
@@ -56,7 +57,7 @@ poweroff -f
 	alloc := status.Allocations[0].ID
 	t.Logf("job has allocation %s", alloc)
 
-	allocStatus := waitUntil(t, 120*time.Second, func() *nomadtest.AllocStatus {
+	allocStatus := testutils.WaitUntil(t, 120*time.Second, func() *nomadtest.AllocStatus {
 		t.Logf("fetching alloc status for alloc %s", alloc)
 		status := nomad.AllocStatus(t, ctx, alloc)
 		t.Logf("alloc status: %#v", status)
@@ -67,7 +68,7 @@ poweroff -f
 	})
 	t.Logf("alloc status: %#v", allocStatus)
 
-	logs := waitUntil(t, 120*time.Second, func() string {
+	logs := testutils.WaitUntil(t, 120*time.Second, func() string {
 		t.Logf("fetching logs for alloc %s", alloc)
 
 		string := nomad.AllocLogs(t, ctx, alloc, "vm").Stdout
@@ -92,17 +93,3 @@ func submit(t *testing.T, ctx context.Context, command string, args ...string) {
 	}
 }
 
-func waitUntil[T any](t *testing.T, timeout time.Duration, fn func() T, ok func(T) bool) T {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	var last T
-	for time.Now().Before(deadline) {
-		last = fn()
-		if ok(last) {
-			return last
-		}
-		time.Sleep(1 * time.Second)
-	}
-	t.Fatalf("timed out waiting; last value: %#v", last)
-	return last
-}

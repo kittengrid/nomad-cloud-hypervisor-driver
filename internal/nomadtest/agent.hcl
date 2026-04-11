@@ -19,3 +19,9 @@ plugin "cloud-hypervisor-driver" {
     cache-dir                    = "/tmp/nomad-ch-cache"
   }
 }
+
+plugin "raw_exec" {
+  config {
+    enabled = true
+  }
+}
