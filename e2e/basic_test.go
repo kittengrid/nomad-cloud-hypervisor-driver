@@ -33,7 +33,19 @@ func pause() {
 	time.Sleep(2 * time.Second)
 }
 
+// onlyTest skips the current test if the E2E_TEST environment variable is set
+// and does not match the test name.  Leave E2E_TEST unset to run all tests.
+//
+//	E2E_TEST=TestOCIHelloFromVM go test -tags=e2e -v ./e2e/...
+func onlyTest(t *testing.T) {
+	t.Helper()
+	if name := os.Getenv("E2E_TEST"); name != "" && t.Name() != name {
+		t.Skipf("skipping %s: E2E_TEST=%s", t.Name(), name)
+	}
+}
+
 func setup(t *testing.T) (context.Context, *nomadtest.NomadAgent) {
+	onlyTest(t)
 	requireRoot(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -73,7 +85,7 @@ func requireRoot(t *testing.T) {
 	}
 }
 
-func dTestPluginStarts(t *testing.T) {
+func TestPluginStarts(t *testing.T) {
 	ctx, _ := setup(t)
 
 	status := run(t, ctx, "nomad", "node", "status", "-self", "-verbose")
