@@ -73,14 +73,16 @@ type AllocStatus struct {
 	ClientStatus string
 }
 
+const nomadReadyLine = "node registration complete"
+
 // NomadAgent manages a Nomad agent process for tests.
 type NomadAgent struct {
 	cfg        NomadConfig
 	cmd        *exec.Cmd
 	client     *nomadapi.Client
 	configFile string
-	stdoutPath string
-	stderrPath string
+	stdout     *os.File // read handle used to poll agent output
+	stderr     *os.File // read handle used to poll agent output
 }
 
 // NewNomadAgent returns a NomadAgent configured with sensible defaults for the
@@ -129,11 +131,11 @@ func (n *NomadAgent) Start(t testing.TB) error {
 	}
 
 	n.cmd = exec.Command(nomadBinary, args...)
-	n.cmd.Stdout, n.stdoutPath, err = n.setupStream(os.Stdout)
+	n.cmd.Stdout, n.stdout, err = n.setupStream(os.Stdout)
 	if err != nil {
 		return err
 	}
-	n.cmd.Stderr, n.stderrPath, err = n.setupStream(os.Stderr)
+	n.cmd.Stderr, n.stderr, err = n.setupStream(os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -142,7 +144,7 @@ func (n *NomadAgent) Start(t testing.TB) error {
 		return fmt.Errorf("start nomad agent: %w", err)
 	}
 
-	if err := waitForNomadReadyFile(n.stdoutPath, n.stderrPath, n.cfg.StartupWait); err != nil {
+	if err := n.waitForOutputString(nomadReadyLine, n.cfg.StartupWait); err != nil {
 		_ = n.Stop(t)
 		return err
 	}
@@ -160,11 +162,13 @@ func (n *NomadAgent) Start(t testing.TB) error {
 		if n.configFile != "" {
 			_ = os.Remove(n.configFile)
 		}
-		if n.stdoutPath != "" {
-			_ = os.Remove(n.stdoutPath)
+		if n.stdout != nil {
+			_ = os.Remove(n.stdout.Name())
+			_ = n.stdout.Close()
 		}
-		if n.stderrPath != "" {
-			_ = os.Remove(n.stderrPath)
+		if n.stderr != nil {
+			_ = os.Remove(n.stderr.Name())
+			_ = n.stderr.Close()
 		}
 	})
 
@@ -330,19 +334,65 @@ func (n *NomadAgent) validate() error {
 }
 
 // setupStream creates a temporary log file named after real (e.g. os.Stdout →
-// "nomad-ch-stdout-*.log") and returns a writer for cmd.Stdout / cmd.Stderr.
-// When DEBUG=1 output is also mirrored to real so it appears in the terminal.
-func (n *NomadAgent) setupStream(real *os.File) (io.Writer, string, error) {
+// "nomad-ch-stdout-*.log") and returns a write-side io.Writer for cmd.Stdout /
+// cmd.Stderr and a separate read-only *os.File for polling. When DEBUG=1
+// output is also mirrored to real.
+//
+// Two independent file descriptors are used (write fd for the child, read fd
+// for polling): each has its own offset and the OS ensures writes are visible
+// to the reader.
+func (n *NomadAgent) setupStream(real *os.File) (io.Writer, *os.File, error) {
 	name := filepath.Base(real.Name()) // "/dev/stdout" → "stdout"
-	f, err := os.CreateTemp("", "nomad-ch-"+name+"-*.log")
+	writeFile, err := os.CreateTemp("", "nomad-ch-"+name+"-*.log")
 	if err != nil {
-		return nil, "", fmt.Errorf("create nomad %s log: %w", name, err)
+		return nil, nil, fmt.Errorf("create nomad %s log: %w", name, err)
 	}
-	var w io.Writer = f
+	readFile, err := os.Open(writeFile.Name())
+	if err != nil {
+		_ = writeFile.Close()
+		return nil, nil, fmt.Errorf("open nomad %s log for reading: %w", name, err)
+	}
+	var w io.Writer = writeFile
 	if os.Getenv("DEBUG") == "1" {
-		w = io.MultiWriter(f, real)
+		w = io.MultiWriter(writeFile, real)
 	}
-	return w, f.Name(), nil
+	return w, readFile, nil
+}
+
+// waitForOutputString polls the agent's stdout and stderr until s appears in
+// either stream or the timeout expires.
+func (n *NomadAgent) waitForOutputString(s string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var outContent, errContent string
+	for time.Now().Before(deadline) {
+		if data, err := readFromStart(n.stdout); err == nil {
+			outContent = data
+			if strings.Contains(outContent, s) {
+				return nil
+			}
+		}
+		if data, err := readFromStart(n.stderr); err == nil {
+			errContent = data
+			if strings.Contains(errContent, s) {
+				return nil
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("nomad agent did not emit %q within %s\nstdout:\n%s\nstderr:\n%s",
+		s, timeout, outContent, errContent)
+}
+
+// readFromStart seeks a file back to the beginning and reads all current
+// content.  For regular files Read returns io.EOF at the current end of file
+// rather than blocking, so this is safe to call while the file is still being
+// written to.
+func readFromStart(f *os.File) (string, error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	data, err := io.ReadAll(f)
+	return string(data), err
 }
 
 // setupDataDir creates a temporary config file with the data_dir stanza
