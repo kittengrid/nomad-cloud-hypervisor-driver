@@ -3,7 +3,7 @@
 
 //go:build e2e
 
-package e2e
+package nomadtest
 
 import (
 	"context"
@@ -19,13 +19,11 @@ import (
 	nomadapi "github.com/hashicorp/nomad/api"
 )
 
-const nomadReadyLine = "node registration complete"
-
 // NomadConfig controls how a Nomad agent is started in e2e tests.
 //
 // If DataDir is empty, the agent is started with -dev and no data dir is
-// created. If DataDir is set, the agent is started normally and the data dir is
-// left intact so tests can stop/start Nomad while preserving state.
+// created. If DataDir is set, the agent is started normally and the data dir
+// is left intact so tests can stop/start Nomad while preserving state.
 type NomadConfig struct {
 	Binary      string
 	ConfigPath  string
@@ -82,7 +80,8 @@ type NomadAgent struct {
 	stderrPath string
 }
 
-// NewNomadAgent returns a Nomad agent helper configured for the local e2e files.
+// NewNomadAgent returns a NomadAgent configured with sensible defaults for the
+// local e2e setup.
 func NewNomadAgent() *NomadAgent {
 	return &NomadAgent{
 		cfg: NomadConfig{
@@ -94,120 +93,8 @@ func NewNomadAgent() *NomadAgent {
 	}
 }
 
-// RunJob submits an HCL job file using the Nomad API client.
-// Only -var=KEY=VALUE style arguments are supported.
-func (n *NomadAgent) RunJob(t testing.TB, ctx context.Context, jobName, jobFile string, args ...string) {
-	t.Helper()
-
-	client := n.mustClient(t)
-	jobHCL, err := os.ReadFile(jobFile)
-	if err != nil {
-		t.Fatalf("read job file %q: %v", jobFile, err)
-	}
-
-	variables, err := parseVarArgs(args)
-	if err != nil {
-		t.Fatalf("parse job vars: %v", err)
-	}
-
-	job, err := client.Jobs().ParseHCLOpts(&nomadapi.JobsParseRequest{
-		JobHCL:    string(jobHCL),
-		Variables: variables,
-	})
-	if err != nil {
-		t.Fatalf("parse job %q: %v", jobFile, err)
-	}
-
-	if jobName != "" {
-		if job.Name == nil {
-			job.Name = &jobName
-		}
-		if job.ID == nil {
-			job.ID = &jobName
-		}
-	}
-
-	if _, _, err := client.Jobs().Register(job, nil); err != nil {
-		t.Fatalf("register job %q: %v", jobFile, err)
-	}
-}
-
-// JobStatus returns the important status fields for a job.
-func (n *NomadAgent) JobStatus(t testing.TB, ctx context.Context, jobName string) *JobStatus {
-	t.Helper()
-
-	client := n.mustClient(t)
-	job, _, err := client.Jobs().Info(jobName, nil)
-	if err != nil {
-		t.Fatalf("get job status %q: %v", jobName, err)
-	}
-
-	allocs, _, err := client.Jobs().Allocations(jobName, true, nil)
-	if err != nil {
-		t.Fatalf("get allocations for %q: %v", jobName, err)
-	}
-
-	status := &JobStatus{
-		ID:          stringValue(job.ID),
-		Name:        stringValue(job.Name),
-		Type:        stringValue(job.Type),
-		Status:      stringValue(job.Status),
-		Namespace:   stringValue(job.Namespace),
-		Allocations: make([]*AllocationStatus, 0, len(allocs)),
-	}
-	for _, a := range allocs {
-		status.Allocations = append(status.Allocations, &AllocationStatus{
-			ID:           a.ID,
-			TaskGroup:    a.TaskGroup,
-			NodeID:       a.NodeID,
-			NodeName:     a.NodeName,
-			Desired:      a.DesiredStatus,
-			ClientStatus: a.ClientStatus,
-		})
-	}
-
-	return status
-}
-
-// AllocStatus returns the important status fields for a specific allocation.
-func (n *NomadAgent) AllocStatus(t testing.TB, ctx context.Context, allocID string) *AllocStatus {
-	t.Helper()
-
-	client := n.mustClient(t)
-	alloc, _, err := client.Allocations().Info(allocID, nil)
-	if err != nil {
-		t.Fatalf("get allocation status %q: %v", allocID, err)
-	}
-
-	return &AllocStatus{
-		ID:           alloc.ID,
-		JobID:        alloc.JobID,
-		TaskGroup:    alloc.TaskGroup,
-		NodeID:       alloc.NodeID,
-		NodeName:     alloc.NodeName,
-		Desired:      alloc.DesiredStatus,
-		ClientStatus: alloc.ClientStatus,
-	}
-}
-
-// AllocLogs returns stdout/stderr content for a task in an allocation.
-func (n *NomadAgent) AllocLogs(t testing.TB, ctx context.Context, allocID, task string) *AllocationLogs {
-	t.Helper()
-
-	client := n.mustClient(t)
-	alloc, _, err := client.Allocations().Info(allocID, nil)
-	if err != nil {
-		t.Fatalf("get allocation logs %q: %v", allocID, err)
-	}
-
-	return &AllocationLogs{
-		Stdout: n.readAllocLog(t, ctx, client, alloc, task, "stdout"),
-		Stderr: n.readAllocLog(t, ctx, client, alloc, task, "stderr"),
-	}
-}
-
-// Start launches Nomad and waits until the expected registration line appears
-// in its stdout log.
+// Start launches the Nomad agent and waits until the expected registration
+// line appears in its log output.
 func (n *NomadAgent) Start(t testing.TB) error {
 	t.Helper()
 
@@ -359,25 +246,116 @@ func (n *NomadAgent) Stop(t testing.TB) error {
 	return nil
 }
 
-func waitForNomadReadyFile(stdoutPath, stderrPath string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	var stdout, stderr string
-	for time.Now().Before(deadline) {
-		if data, err := os.ReadFile(stdoutPath); err == nil {
-			stdout = string(data)
-			if strings.Contains(stdout, nomadReadyLine) {
-				return nil
-			}
-		}
-		if data, err := os.ReadFile(stderrPath); err == nil {
-			stderr = string(data)
-			if strings.Contains(stderr, nomadReadyLine) {
-				return nil
-			}
-		}
-		time.Sleep(500 * time.Millisecond)
+// RunJob submits an HCL job file using the Nomad API client.
+// Only -var=KEY=VALUE style arguments are supported.
+func (n *NomadAgent) RunJob(t testing.TB, ctx context.Context, jobName, jobFile string, args ...string) {
+	t.Helper()
+
+	client := n.mustClient(t)
+	jobHCL, err := os.ReadFile(jobFile)
+	if err != nil {
+		t.Fatalf("read job file %q: %v", jobFile, err)
 	}
-	return fmt.Errorf("nomad agent did not emit %q within %s\nstdout:\n%s\nstderr:\n%s", nomadReadyLine, timeout, stdout, stderr)
+
+	variables, err := parseVarArgs(args)
+	if err != nil {
+		t.Fatalf("parse job vars: %v", err)
+	}
+
+	job, err := client.Jobs().ParseHCLOpts(&nomadapi.JobsParseRequest{
+		JobHCL:    string(jobHCL),
+		Variables: variables,
+	})
+	if err != nil {
+		t.Fatalf("parse job %q: %v", jobFile, err)
+	}
+
+	if jobName != "" {
+		if job.Name == nil {
+			job.Name = &jobName
+		}
+		if job.ID == nil {
+			job.ID = &jobName
+		}
+	}
+
+	if _, _, err := client.Jobs().Register(job, nil); err != nil {
+		t.Fatalf("register job %q: %v", jobFile, err)
+	}
+}
+
+// JobStatus returns the status of a job and its allocations.
+func (n *NomadAgent) JobStatus(t testing.TB, ctx context.Context, jobName string) *JobStatus {
+	t.Helper()
+
+	client := n.mustClient(t)
+	job, _, err := client.Jobs().Info(jobName, nil)
+	if err != nil {
+		t.Fatalf("get job status %q: %v", jobName, err)
+	}
+
+	allocs, _, err := client.Jobs().Allocations(jobName, true, nil)
+	if err != nil {
+		t.Fatalf("get allocations for %q: %v", jobName, err)
+	}
+
+	status := &JobStatus{
+		ID:          stringValue(job.ID),
+		Name:        stringValue(job.Name),
+		Type:        stringValue(job.Type),
+		Status:      stringValue(job.Status),
+		Namespace:   stringValue(job.Namespace),
+		Allocations: make([]*AllocationStatus, 0, len(allocs)),
+	}
+	for _, a := range allocs {
+		status.Allocations = append(status.Allocations, &AllocationStatus{
+			ID:           a.ID,
+			TaskGroup:    a.TaskGroup,
+			NodeID:       a.NodeID,
+			NodeName:     a.NodeName,
+			Desired:      a.DesiredStatus,
+			ClientStatus: a.ClientStatus,
+		})
+	}
+
+	return status
+}
+
+// AllocStatus returns the status of a specific allocation.
+func (n *NomadAgent) AllocStatus(t testing.TB, ctx context.Context, allocID string) *AllocStatus {
+	t.Helper()
+
+	client := n.mustClient(t)
+	alloc, _, err := client.Allocations().Info(allocID, nil)
+	if err != nil {
+		t.Fatalf("get allocation status %q: %v", allocID, err)
+	}
+
+	return &AllocStatus{
+		ID:           alloc.ID,
+		JobID:        alloc.JobID,
+		TaskGroup:    alloc.TaskGroup,
+		NodeID:       alloc.NodeID,
+		NodeName:     alloc.NodeName,
+		Desired:      alloc.DesiredStatus,
+		ClientStatus: alloc.ClientStatus,
+	}
+}
+
+// AllocLogs returns stdout/stderr content for a task in an allocation.
+func (n *NomadAgent) AllocLogs(t testing.TB, ctx context.Context, allocID, task string) *AllocationLogs {
+	t.Helper()
+
+	client := n.mustClient(t)
+	alloc, _, err := client.Allocations().Info(allocID, nil)
+	if err != nil {
+		t.Fatalf("get allocation logs %q: %v", allocID, err)
+	}
+
+	return &AllocationLogs{
+		Stdout: n.readAllocLog(t, ctx, client, alloc, task, "stdout"),
+		Stderr: n.readAllocLog(t, ctx, client, alloc, task, "stderr"),
+	}
 }
 
 func (n *NomadAgent) running() bool {
@@ -390,13 +368,6 @@ func (n *NomadAgent) mustClient(t testing.TB) *nomadapi.Client {
 		t.Fatal("nomad client not initialized")
 	}
 	return n.client
-}
-
-func stringValue(v *string) string {
-	if v == nil {
-		return ""
-	}
-	return *v
 }
 
 func (n *NomadAgent) readAllocLog(t testing.TB, ctx context.Context, client *nomadapi.Client, alloc *nomadapi.Allocation, task, logType string) string {
@@ -441,22 +412,9 @@ func (n *NomadAgent) readAllocLog(t testing.TB, ctx context.Context, client *nom
 	return strings.TrimSpace(out.String())
 }
 
-func parseVarArgs(args []string) (string, error) {
-	if len(args) == 0 {
-		return "", nil
+func stringValue(v *string) string {
+	if v == nil {
+		return ""
 	}
-
-	lines := make([]string, 0, len(args))
-	for _, arg := range args {
-		if !strings.HasPrefix(arg, "-var=") {
-			return "", fmt.Errorf("unsupported arg %q (only -var=KEY=VALUE is supported)", arg)
-		}
-		kv := strings.TrimPrefix(arg, "-var=")
-		parts := strings.SplitN(kv, "=", 2)
-		if len(parts) != 2 {
-			return "", fmt.Errorf("invalid variable %q", arg)
-		}
-		lines = append(lines, fmt.Sprintf("%s = %q", parts[0], parts[1]))
-	}
-	return strings.Join(lines, "\n"), nil
+	return *v
 }

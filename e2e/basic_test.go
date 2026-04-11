@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kittengrid/nomad-cloud-hypervisor-driver/internal/nomadtest"
 	"github.com/shoenig/test/must"
 )
 
@@ -32,7 +33,7 @@ func pause() {
 	time.Sleep(2 * time.Second)
 }
 
-func setup(t *testing.T) (context.Context, *NomadAgent) {
+func setup(t *testing.T) (context.Context, *nomadtest.NomadAgent) {
 	requireRoot(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -40,7 +41,7 @@ func setup(t *testing.T) (context.Context, *NomadAgent) {
 		cancel()
 	})
 
-	nomad := NewNomadAgent()
+	nomad := nomadtest.NewNomadAgent()
 	if err := nomad.Start(t); err != nil {
 		t.Fatal(err)
 	}
