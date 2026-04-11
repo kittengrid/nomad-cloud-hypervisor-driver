@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -82,11 +83,16 @@ type NomadAgent struct {
 }
 
 // NewNomadAgent returns a NomadAgent configured with sensible defaults for the
-// local e2e setup.
+// local e2e setup.  PluginDir is derived from the location of this source file
+// (internal/nomadtest/agent.go → two directories up = module root).
 func NewNomadAgent() *NomadAgent {
+	_, thisFile, _, _ := runtime.Caller(0)
+	moduleRoot := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
+
 	return &NomadAgent{
 		cfg: NomadConfig{
 			ConfigPath:  filepath.Join(".", "agent.hcl"),
+			PluginDir:   moduleRoot,
 			Address:     "127.0.0.1:4646",
 			StartupWait: 60 * time.Second,
 		},
@@ -102,25 +108,8 @@ func (n *NomadAgent) Start(t testing.TB) error {
 		return nil
 	}
 
-	if n.cfg.ConfigPath == "" {
-		n.cfg.ConfigPath = filepath.Join(".", "agent.hcl")
-	}
-	if n.cfg.Address == "" {
-		n.cfg.Address = "127.0.0.1:4646"
-	}
-	if n.cfg.PluginDir == "" {
-		if env := os.Getenv("NOMAD_PLUGIN_DIR"); env != "" {
-			n.cfg.PluginDir = env
-		} else {
-			pluginDir, err := filepath.Abs("..")
-			if err != nil {
-				return fmt.Errorf("resolve plugin dir: %w", err)
-			}
-			n.cfg.PluginDir = pluginDir
-		}
-	}
-	if n.cfg.StartupWait <= 0 {
-		n.cfg.StartupWait = 60 * time.Second
+	if err := n.validate(); err != nil {
+		return fmt.Errorf("invalid nomad agent config: %w", err)
 	}
 
 	configPath, baseConfig, err := n.resolveConfig()
@@ -139,11 +128,11 @@ func (n *NomadAgent) Start(t testing.TB) error {
 	}
 
 	n.cmd = exec.Command(nomadBinary, args...)
-	n.cmd.Stdout, err = n.setupStream("stdout")
+	n.cmd.Stdout, n.stdoutPath, err = n.setupStream("stdout")
 	if err != nil {
 		return err
 	}
-	n.cmd.Stderr, err = n.setupStream("stderr")
+	n.cmd.Stderr, n.stderrPath, err = n.setupStream("stderr")
 	if err != nil {
 		return err
 	}
@@ -322,21 +311,32 @@ func (n *NomadAgent) AllocLogs(t testing.TB, ctx context.Context, allocID, task 
 	}
 }
 
+// validate returns an error if any required config field is missing.
+func (n *NomadAgent) validate() error {
+	if n.cfg.ConfigPath == "" {
+		return fmt.Errorf("ConfigPath is required")
+	}
+	if n.cfg.Address == "" {
+		return fmt.Errorf("Address is required")
+	}
+	if n.cfg.PluginDir == "" {
+		return fmt.Errorf("PluginDir is required")
+	}
+	if n.cfg.StartupWait <= 0 {
+		return fmt.Errorf("StartupWait must be positive")
+	}
+	return nil
+}
+
 // setupStream creates a temporary log file for the given stream name
 // ("stdout" or "stderr"), stores its path on the agent, and returns the open
 // file ready to be assigned to cmd.Stdout / cmd.Stderr.
-func (n *NomadAgent) setupStream(name string) (*os.File, error) {
+func (n *NomadAgent) setupStream(name string) (*os.File, string, error) {
 	f, err := os.CreateTemp("", "nomad-ch-"+name+"-*.log")
 	if err != nil {
-		return nil, fmt.Errorf("create nomad %s log: %w", name, err)
+		return nil, "", fmt.Errorf("create nomad %s log: %w", name, err)
 	}
-	switch name {
-	case "stdout":
-		n.stdoutPath = f.Name()
-	case "stderr":
-		n.stderrPath = f.Name()
-	}
-	return f, nil
+	return f, f.Name(), nil
 }
 
 // setupDataDir creates a temporary config file with the data_dir stanza
