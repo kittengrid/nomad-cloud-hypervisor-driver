@@ -40,6 +40,7 @@ func TestBuildCHArgs(t *testing.T) {
 			},
 		},
 		Console: TaskConsoleConfig{Mode: "off"},
+		Serial:  "socket=/tmp/ch-sock.serial.sock",
 	}
 
 	resources := &drivers.Resources{

@@ -75,8 +75,11 @@ func startCloudHypervisor(
 // and the Nomad-allocated resources (used to derive vCPU count and memory size).
 func buildCHArgs(cfg TaskConfig, resources *drivers.Resources, socketBasePath string, taskID string) ([]string, error) {
 	args := []string{"--api-socket", "path=" + socketBasePath + ".sock"}
+	if cfg.Serial != "" {
+		args = append(args, "--serial", cfg.Serial)
+	}
 
-	args = append(args, "--serial", "socket="+socketBasePath+".serial.sock")
+	//	args = append(args, "--serial", "socket="+socketBasePath+".serial.sock")
 	if cfg.Payload.Kernel != "" {
 		args = append(args, "--kernel", cfg.Payload.Kernel)
 	}

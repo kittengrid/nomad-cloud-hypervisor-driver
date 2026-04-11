@@ -38,13 +38,14 @@ func TestReadOCIMetadataOverrides(t *testing.T) {
     "network": [
       {"mac": "52:54:00:aa:bb:cc", "auto-tuntap": true, "auto-tuntap-bridge": "br0"}
     ],
-    "cloud-init": {"user-data": "#cloud-config\n"}
+    "cloud-init": {"user-data": "#cloud-config\n"},
+    "serial": "socket=/tmp/serial"
   }
 }`
 
 	must.NoError(t, os.WriteFile(metadataPath, []byte(metadata), 0o644))
 
-	overrides, err := readOCIMetadataOverrides(metadataPath)
+	overrides, err := readOCIMetadataOverrides(metadataPath, hclog.NewNullLogger())
 	must.NoError(t, err)
 	must.NotNil(t, overrides)
 	must.NotNil(t, overrides.Payload)
@@ -80,6 +81,7 @@ func TestApplyTaskConfigOverrides(t *testing.T) {
 			},
 		},
 		CloudInit: &CloudInitOverride{UserData: ptr("#cloud-config\n")},
+		Serial:    ptr("socket=/tmp/serial"),
 	}
 
 	logger := hclog.NewNullLogger()
@@ -99,6 +101,7 @@ func TestApplyTaskConfigOverrides(t *testing.T) {
 	must.Eq(t, "br0", cfg.Network[0].AutoTuntapBridge)
 	must.NotNil(t, cfg.CloudInit)
 	must.Eq(t, "#cloud-config\n", cfg.CloudInit.UserData)
+	must.Eq(t, "socket=/tmp/serial", cfg.Serial)
 }
 
 func TestApplyOCIPayloadDefaults(t *testing.T) {

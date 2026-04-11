@@ -92,7 +92,7 @@ var (
 	// this is used to validated the configuration specified for the plugin
 	// when a job is submitted.
 	taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
-		"payload": hclspec.NewBlock("payload", true, hclspec.NewObject(map[string]*hclspec.Spec{
+		"payload": hclspec.NewBlock("payload", false, hclspec.NewObject(map[string]*hclspec.Spec{
 			"kernel":    hclspec.NewAttr("kernel", "string", false),
 			"initramfs": hclspec.NewAttr("initramfs", "string", false),
 			"cmdline":   hclspec.NewAttr("cmdline", "string", false),
@@ -105,8 +105,8 @@ var (
 			"ephemeral_overlay": hclspec.NewAttr("ephemeral_overlay", "bool", false),
 			"oci_image":         hclspec.NewAttr("oci_image", "string", false),
 		})),
-		"console": hclspec.NewBlock("console", true, hclspec.NewObject(map[string]*hclspec.Spec{
-			"mode": hclspec.NewAttr("mode", "string", true),
+		"console": hclspec.NewBlock("console", false, hclspec.NewObject(map[string]*hclspec.Spec{
+			"mode": hclspec.NewAttr("mode", "string", false),
 		})),
 		"network": hclspec.NewBlockList("network", hclspec.NewObject(map[string]*hclspec.Spec{
 			"mac":                hclspec.NewAttr("mac", "string", false),
@@ -121,6 +121,7 @@ var (
 			"user-data": hclspec.NewAttr("user-data", "string", true),
 			"meta-data": hclspec.NewAttr("meta-data", "string", false),
 		})),
+		"serial": hclspec.NewAttr("serial", "string", false),
 	})
 
 	// capabilities indicates what optional features this driver supports
@@ -190,6 +191,7 @@ type TaskConfig struct {
 	Network   []TaskNetworkConfig `codec:"network"`
 	CloudInit *CloudInit          `codec:"cloud-init"`
 	OCIImage  string              `codec:"oci_image"`
+	Serial    string              `codec:"serial"`
 }
 
 // TaskState is the runtime state which is encoded in the handle returned to
@@ -444,7 +446,7 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 				CacheDir:  d.config.CacheDir,
 			}
 
-			ociImagePath, err := PullIntoCache(context.Background(), pullOptions)
+			ociImagePath, err := PullIntoCache(context.Background(), pullOptions, d.logger)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to pull OCI image: %v", err)
 			}

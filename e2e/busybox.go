@@ -103,13 +103,20 @@ func writeBusyboxInitrd(w *cpio.Writer, busyboxData, initData []byte) error {
 	}
 
 	for _, link := range []string{"sh", "echo", "cat", "mount", "umount", "poweroff", "reboot", "halt", "sleep"} {
+		target := "busybox"
+
 		if err := w.WriteHeader(&cpio.Header{
 			Name:     filepath.Join("bin", link),
-			Linkname: "busybox",
-			Mode:     cpio.FileMode(cpio.TypeSymlink | 0o777),
+			Linkname: target, // fine to keep for in-memory metadata
+			Mode:     cpio.FileMode(cpio.TypeSymlink | 0o755),
+			Size:     int64(len(target)),
 			ModTime:  now,
 		}); err != nil {
-			return fmt.Errorf("write symlink %q: %w", link, err)
+			return fmt.Errorf("write symlink header %q: %w", link, err)
+		}
+
+		if _, err := w.Write([]byte(target)); err != nil {
+			return fmt.Errorf("write symlink target %q: %w", link, err)
 		}
 	}
 

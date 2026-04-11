@@ -63,6 +63,7 @@ type TaskConfigOverrides struct {
 	Console   *TaskConsoleOverride  `json:"console,omitempty"`
 	Network   []TaskNetworkOverride `json:"network,omitempty"`
 	CloudInit *CloudInitOverride    `json:"cloud-init,omitempty"`
+	Serial    *string               `json:"serial,omitempty"`
 }
 
 type OCIMetadata struct {
@@ -73,6 +74,7 @@ type OCIMetadata struct {
 }
 
 func resolveOCIPayload(ctx context.Context, cfg *TaskConfig, cacheDir string, logger hclog.Logger) error {
+	logger.Info("Resolving OCI payload", "oci_image", cfg.OCIImage, "cache_dir", cacheDir)
 	if cfg == nil || cfg.OCIImage == "" {
 		return nil
 	}
@@ -86,15 +88,17 @@ func resolveOCIPayload(ctx context.Context, cfg *TaskConfig, cacheDir string, lo
 		CacheDir:  cacheDir,
 	}
 
-	artifact, err := PullIntoCache(ctx, pullOptions)
+	artifact, err := PullIntoCache(ctx, pullOptions, logger)
 	if err != nil {
 		return fmt.Errorf("pull OCI payload: %w", err)
 	}
 
-	overrides, err := readOCIMetadataOverrides(filepath.Join(artifact.WorkDir, "metadata.json"))
+	overrides, err := readOCIMetadataOverrides(filepath.Join(artifact.WorkDir, "metadata.json"), logger)
 	if err != nil {
 		return fmt.Errorf("read OCI metadata: %w", err)
 	}
+	logger.Info("OCI metadata read", "overrides_present", overrides != nil)
+
 	if overrides != nil {
 		applyTaskConfigOverrides(cfg, overrides, artifact.WorkDir, logger)
 	}
@@ -103,14 +107,16 @@ func resolveOCIPayload(ctx context.Context, cfg *TaskConfig, cacheDir string, lo
 	return nil
 }
 
-func readOCIMetadataOverrides(path string) (*TaskConfigOverrides, error) {
+func readOCIMetadataOverrides(path string, logger hclog.Logger) (*TaskConfigOverrides, error) {
 	data, err := os.ReadFile(path)
+	logger.Info("Reading OCI metadata", "path", path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, fmt.Errorf("OCI metadata.json not found at %q: %w", path, err)
 		}
 		return nil, err
 	}
+	logger.Debug("OCI metadata content", "content", string(data))
 
 	var metadata OCIMetadata
 	if err := json.Unmarshal(data, &metadata); err != nil {
@@ -204,6 +210,10 @@ func applyTaskConfigOverrides(cfg *TaskConfig, overrides *TaskConfigOverrides, b
 			cfg.CloudInit.MetaData = *overrides.CloudInit.MetaData
 			logger.Info("OCI override applied", "field", "cloud-init.meta-data")
 		}
+	}
+	if overrides.Serial != nil {
+		cfg.Serial = *overrides.Serial
+		logger.Info("OCI override applied", "field", "serial", "value", cfg.Serial)
 	}
 }
 

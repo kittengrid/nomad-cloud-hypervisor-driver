@@ -6,6 +6,7 @@
 package e2e
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -14,6 +15,15 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/hashicorp/go-hclog"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	oras "oras.land/oras-go/v2"
+	"oras.land/oras-go/v2/content/file"
+	"oras.land/oras-go/v2/registry/remote"
+	"oras.land/oras-go/v2/registry/remote/auth"
+	"oras.land/oras-go/v2/registry/remote/retry"
 )
 
 // OCIImageOptions describes a tiny OCI payload layout on disk.
@@ -21,7 +31,6 @@ import (
 // The helper creates a temporary directory containing:
 //   - vmlinuz
 //   - initramfs.img
-//   - rootfs.raw
 //   - metadata.json
 //
 // The metadata file uses the driver's expected format:
@@ -51,10 +60,6 @@ type OCIImageOptions struct {
 	// KernelPath optionally overrides the kernel image to copy into the temp dir.
 	// If empty, a host kernel is discovered automatically.
 	KernelPath string
-
-	// RootfsSize controls the size of the generated raw disk image.
-	// Defaults to 64 MiB.
-	RootfsSize int64
 }
 
 // CreateOCIImageDir creates a temporary directory with a minimal OCI-style
@@ -71,9 +76,6 @@ func CreateOCIImageDir(t testing.TB, opts OCIImageOptions) string {
 	if opts.Arch == "" {
 		opts.Arch = runtime.GOARCH
 	}
-	if opts.RootfsSize <= 0 {
-		opts.RootfsSize = 64 * 1024 * 1024
-	}
 
 	dir := t.TempDir()
 
@@ -87,11 +89,7 @@ func CreateOCIImageDir(t testing.TB, opts OCIImageOptions) string {
 	if err != nil {
 		t.Fatalf("create busybox initrd: %v", err)
 	}
-	copyFile(t, initrd, filepath.Join(dir, "initramfs.img"))
-
-	if err := createSparseFile(filepath.Join(dir, "rootfs.raw"), opts.RootfsSize); err != nil {
-		t.Fatalf("create rootfs image: %v", err)
-	}
+	copyFile(t, initrd, filepath.Join(dir, "initrd.img"))
 
 	metadata := map[string]any{
 		"name":    opts.Name,
@@ -109,8 +107,64 @@ func CreateOCIImageDir(t testing.TB, opts OCIImageOptions) string {
 	if err := os.WriteFile(filepath.Join(dir, "metadata.json"), b, 0o644); err != nil {
 		t.Fatalf("write metadata.json: %v", err)
 	}
+	println("created OCI image dir:", dir)
+
+	// sleep for a while to check the dir
 
 	return dir
+}
+
+// PushOCIImageToRegistry creates a local OCI image from opts and pushes it to
+// the provided temporary registry.
+func PushOCIImageToRegistry(t testing.TB, reg *TempRegistry, repository, tag string, opts OCIImageOptions) string {
+	t.Helper()
+
+	dir := CreateOCIImageDir(t, opts)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	ref := reg.Reference(repository, tag)
+	repo, err := remote.NewRepository(ref)
+	if err != nil {
+		t.Fatalf("create repository: %v", err)
+	}
+	repo.PlainHTTP = true
+	repo.Client = &auth.Client{
+		Client: retry.DefaultClient,
+		Cache:  auth.NewCache(),
+	}
+
+	metadataBytes := readFile(t, filepath.Join(dir, "metadata.json"))
+	configDesc, err := oras.PushBytes(ctx, repo, "application/json", metadataBytes)
+	if err != nil {
+		t.Fatalf("push metadata.json: %v", err)
+	}
+
+	layers := []ocispec.Descriptor{}
+	for _, name := range []string{"vmlinuz", "initrd.img"} {
+		b := readFile(t, filepath.Join(dir, name))
+		desc, err := oras.PushBytes(ctx, repo, "application/octet-stream", b)
+		if err != nil {
+			t.Fatalf("push %s: %v", name, err)
+		}
+		desc.Annotations = map[string]string{ocispec.AnnotationTitle: name}
+		layers = append(layers, desc)
+	}
+
+	manifestDesc, err := oras.PackManifest(ctx, repo, oras.PackManifestVersion1_1, "", oras.PackManifestOptions{
+		ConfigDescriptor: &configDesc,
+		Layers:           layers,
+	})
+
+	if err != nil {
+		t.Fatalf("pack manifest: %v", err)
+	}
+
+	if _, err := oras.Tag(ctx, repo, manifestDesc.Digest.String(), tag); err != nil {
+		t.Fatalf("tag manifest: %v", err)
+	}
+
+	return ref
 }
 
 func discoverKernelImage(t testing.TB) string {
@@ -178,18 +232,13 @@ func copyFile(t testing.TB, src, dst string) {
 	}
 }
 
-func createSparseFile(path string, size int64) error {
-	f, err := os.Create(path)
+func readFile(t testing.TB, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		t.Fatalf("read %s: %v", path, err)
 	}
-	defer f.Close()
-
-	if err := f.Truncate(size); err != nil {
-		return err
-	}
-
-	return f.Close()
+	return b
 }
 
 func fileExists(path string) bool {
@@ -198,4 +247,74 @@ func fileExists(path string) bool {
 		return false
 	}
 	return !info.IsDir()
+}
+
+// readConfigAndLayers materializes the OCI manifest into a filesystem layout
+// with the expected filenames used by the driver.
+func readConfigAndLayers(ctx context.Context, repo *remote.Repository, ref string, workDir string) error {
+	desc, err := oras.Resolve(ctx, repo, ref, oras.DefaultResolveOptions)
+	if err != nil {
+		return err
+	}
+	_, manifestBytes, err := oras.FetchBytes(ctx, repo, desc.Digest.String(), oras.DefaultFetchBytesOptions)
+	if err != nil {
+		return err
+	}
+
+	var manifest ocispec.Manifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		return err
+	}
+
+	if manifest.Config.Digest != "" {
+		_, configBytes, err := oras.FetchBytes(ctx, repo, manifest.Config.Digest.String(), oras.DefaultFetchBytesOptions)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(workDir, "metadata.json"), configBytes, 0o644); err != nil {
+			return err
+		}
+	}
+
+	for _, layer := range manifest.Layers {
+		name := layer.Annotations[ocispec.AnnotationTitle]
+		if name == "" {
+			continue
+		}
+		_, data, err := oras.FetchBytes(ctx, repo, layer.Digest.String(), oras.DefaultFetchBytesOptions)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(workDir, name), data, 0o644); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// fileStoreCopyFallback is kept for compatibility with any older layouts that
+// are copied verbatim by oras.
+func fileStoreCopyFallback(ctx context.Context, repo *remote.Repository, ref string, workDir string) error {
+	fs, err := file.New(workDir)
+	if err != nil {
+		return err
+	}
+	defer fs.Close()
+
+	_, err = oras.Copy(ctx, repo, ref, fs, "", oras.DefaultCopyOptions)
+	return err
+}
+
+// MaterializeOCIImage attempts to fetch an OCI image from a registry into a
+// working directory using the driver's expected file layout.
+func MaterializeOCIImage(ctx context.Context, repo *remote.Repository, ref string, workDir string) error {
+	if err := readConfigAndLayers(ctx, repo, ref, workDir); err == nil {
+		return nil
+	}
+	return fileStoreCopyFallback(ctx, repo, ref, workDir)
+}
+
+func getLogger() hclog.Logger {
+	return hclog.NewNullLogger()
 }
