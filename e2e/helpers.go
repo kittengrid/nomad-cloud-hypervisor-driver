@@ -14,7 +14,6 @@ import (
 
 func purge(t *testing.T, ctx context.Context, job string) func() {
 	return func() {
-		t.Log("STOP", job)
 		cmd := exec.CommandContext(ctx, "nomad", "job", "stop", "-purge", job)
 		b, err := cmd.CombinedOutput()
 		output := strings.TrimSpace(string(b))

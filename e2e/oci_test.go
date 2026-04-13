@@ -42,12 +42,8 @@ poweroff -f
 	})
 
 	nomad.RunJob(t, ctx, "ch-oci", testutils.GetFixtureFileContents(t, "oci.hcl"), "-var=oci_image="+imageRef)
-	t.Logf("submitted job with OCI image %s", imageRef)
-
 	status := testutils.WaitUntil(t, 120*time.Second, func() *nomadtest.JobStatus {
-		t.Logf("fetching job status for ch-oci")
 		status := nomad.JobStatus(t, ctx, "ch-oci")
-		t.Logf("job status: %#v", status)
 
 		return status
 	}, func(s *nomadtest.JobStatus) bool { return s != nil && s.Status == "dead" })
@@ -55,29 +51,16 @@ poweroff -f
 		t.Fatal("no allocations returned for job")
 	}
 	alloc := status.Allocations[0].ID
-	t.Logf("job has allocation %s", alloc)
-
-	allocStatus := testutils.WaitUntil(t, 120*time.Second, func() *nomadtest.AllocStatus {
-		t.Logf("fetching alloc status for alloc %s", alloc)
+	testutils.WaitUntil(t, 120*time.Second, func() *nomadtest.AllocStatus {
 		status := nomad.AllocStatus(t, ctx, alloc)
-		t.Logf("alloc status: %#v", status)
-
 		return status
 	}, func(s *nomadtest.AllocStatus) bool {
 		return s != nil && (s.ClientStatus == "running" || s.ClientStatus == "complete")
 	})
-	t.Logf("alloc status: %#v", allocStatus)
-
 	logs := testutils.WaitUntil(t, 120*time.Second, func() string {
-		t.Logf("fetching logs for alloc %s", alloc)
-
 		string := nomad.AllocLogs(t, ctx, alloc, "vm").Stdout
-		t.Logf("logs:\n%s", string)
-
 		return string
 	}, func(s string) bool {
-
-		t.Logf("checking logs for alloc %s", alloc)
 
 		return strings.Contains(s, "hello from the VM")
 	})
@@ -86,10 +69,8 @@ poweroff -f
 
 func submit(t *testing.T, ctx context.Context, command string, args ...string) {
 	t.Helper()
-	t.Logf("SUBMIT '%s %s'", command, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, command, args...)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start %s: %v", command, err)
 	}
 }
-

@@ -479,7 +479,7 @@ func (n *NomadAgent) readAllocLog(t testing.TB, ctx context.Context, client *nom
 	defer cancel()
 
 	var out strings.Builder
-	frames, errs := client.AllocFS().Logs(alloc, true, task, logType, "start", 0, logCtx.Done(), nil)
+	frames, errs := client.AllocFS().Logs(alloc, false, task, logType, "start", 0, logCtx.Done(), nil)
 	for frames != nil || errs != nil {
 		select {
 		case frame, ok := <-frames:

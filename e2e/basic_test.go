@@ -67,7 +67,6 @@ func setup(t *testing.T) (context.Context, *nomadtest.NomadAgent) {
 }
 
 func run(t *testing.T, ctx context.Context, command string, args ...string) string {
-	t.Logf("RUN '%s %s'", command, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, command, args...)
 	b, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(b))
