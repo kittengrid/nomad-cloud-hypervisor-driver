@@ -3,7 +3,7 @@
 
 //go:build e2e
 
-package e2e
+package oci
 
 import (
 	"context"
@@ -17,8 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/go-hclog"
-	"github.com/kittengrid/nomad-cloud-hypervisor-driver/internal/oci"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	oras "oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/registry/remote"
@@ -107,16 +105,13 @@ func CreateOCIImageDir(t testing.TB, opts OCIImageOptions) string {
 	if err := os.WriteFile(filepath.Join(dir, "metadata.json"), b, 0o644); err != nil {
 		t.Fatalf("write metadata.json: %v", err)
 	}
-	println("created OCI image dir:", dir)
-
-	// sleep for a while to check the dir
 
 	return dir
 }
 
 // PushOCIImageToRegistry creates a local OCI image from opts and pushes it to
 // the provided temporary registry.
-func PushOCIImageToRegistry(t testing.TB, reg *TempRegistry, repository, tag string, opts OCIImageOptions) string {
+func PushOCIImageToRegistry(t testing.TB, reg interface{ Reference(string, string) string }, repository, tag string, opts OCIImageOptions) string {
 	t.Helper()
 
 	dir := CreateOCIImageDir(t, opts)
@@ -155,7 +150,6 @@ func PushOCIImageToRegistry(t testing.TB, reg *TempRegistry, repository, tag str
 		ConfigDescriptor: &configDesc,
 		Layers:           layers,
 	})
-
 	if err != nil {
 		t.Fatalf("pack manifest: %v", err)
 	}
@@ -165,6 +159,12 @@ func PushOCIImageToRegistry(t testing.TB, reg *TempRegistry, repository, tag str
 	}
 
 	return ref
+}
+
+// MaterializeOCIImage attempts to fetch an OCI image from a registry into a
+// working directory using the driver's expected file layout.
+func MaterializeOCIImage(ctx context.Context, repo *remote.Repository, ref, workDir string) error {
+	return MaterializeImageWithFallback(ctx, repo, ref, workDir)
 }
 
 func discoverKernelImage(t testing.TB) string {
@@ -247,16 +247,4 @@ func fileExists(path string) bool {
 		return false
 	}
 	return !info.IsDir()
-}
-
-// readConfigAndLayers materializes the OCI manifest into a filesystem layout
-// with the expected filenames used by the driver.
-// MaterializeOCIImage attempts to fetch an OCI image from a registry into a
-// working directory using the driver's expected file layout.
-func MaterializeOCIImage(ctx context.Context, repo *remote.Repository, ref string, workDir string) error {
-	return oci.MaterializeImageWithFallback(ctx, repo, ref, workDir)
-}
-
-func getLogger() hclog.Logger {
-	return hclog.NewNullLogger()
 }

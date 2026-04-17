@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kittengrid/nomad-cloud-hypervisor-driver/internal/nomadtest"
+	testoci "github.com/kittengrid/nomad-cloud-hypervisor-driver/internal/oci"
 	testutils "github.com/kittengrid/nomad-cloud-hypervisor-driver/internal/test_utils"
 	"github.com/shoenig/test/must"
 )
@@ -22,7 +23,7 @@ func TestOCIHelloFromVM(t *testing.T) {
 	defer purge(t, ctx, "ch-oci")()
 
 	registry := StartTempRegistry(t)
-	imageRef := PushOCIImageToRegistry(t, registry, "kittengrid/hello-vm", "latest", OCIImageOptions{
+	imageRef := testoci.PushOCIImageToRegistry(t, registry, "kittengrid/hello-vm", "latest", testoci.OCIImageOptions{
 		InitContents: `#!/bin/sh
 set -eux
 mount -t proc proc /proc
