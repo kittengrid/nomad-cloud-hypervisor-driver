@@ -161,12 +161,6 @@ func PushOCIImageToRegistry(t testing.TB, reg interface{ Reference(string, strin
 	return ref
 }
 
-// MaterializeOCIImage attempts to fetch an OCI image from a registry into a
-// working directory using the driver's expected file layout.
-func MaterializeOCIImage(ctx context.Context, repo *remote.Repository, ref, workDir string) error {
-	return MaterializeImageWithFallback(ctx, repo, ref, workDir)
-}
-
 func discoverKernelImage(t testing.TB) string {
 	t.Helper()
 
