@@ -104,6 +104,37 @@ func TestApplyTaskConfigOverrides(t *testing.T) {
 	must.Eq(t, "socket=/tmp/serial", cfg.Serial)
 }
 
+func TestApplyJobConfig(t *testing.T) {
+	// Base comes from OCI image; job config wins on every non-zero field.
+	base := &TaskConfig{
+		Payload:  TaskPayloadConfig{Kernel: "/oci/vmlinuz", Initramfs: "/oci/initrd.img", Cmdline: "console=ttyS0"},
+		Disk:     []TaskDiskConfig{{Path: "/oci/rootfs.qcow2", ImageType: "qcow2"}},
+		Console:  TaskConsoleConfig{Mode: "Tty"},
+		Network:  []TaskNetworkConfig{{AutoTuntap: true}},
+		CloudInit: &CloudInit{UserData: "#oci-cloud-config\n"},
+		Serial:   "tty",
+	}
+	job := &TaskConfig{
+		Payload: TaskPayloadConfig{Kernel: "/job/custom-kernel", Cmdline: "quiet"},
+		Serial:  "socket=/tmp/serial",
+	}
+
+	applyJobConfig(base, job, hclog.NewNullLogger())
+
+	// Job fields win.
+	must.Eq(t, "/job/custom-kernel", base.Payload.Kernel)
+	must.Eq(t, "quiet", base.Payload.Cmdline)
+	must.Eq(t, "socket=/tmp/serial", base.Serial)
+
+	// OCI fields survive where job left them empty.
+	must.Eq(t, "/oci/initrd.img", base.Payload.Initramfs)
+	must.SliceLen(t, 1, base.Disk)
+	must.Eq(t, "/oci/rootfs.qcow2", base.Disk[0].Path)
+	must.Eq(t, "Tty", base.Console.Mode)
+	must.SliceLen(t, 1, base.Network)
+	must.NotNil(t, base.CloudInit)
+}
+
 func TestApplyOCIPayloadDefaults(t *testing.T) {
 	dir := t.TempDir()
 	must.NoError(t, os.WriteFile(filepath.Join(dir, "vmlinuz"), []byte("kernel"), 0o644))

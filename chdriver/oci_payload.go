@@ -70,11 +70,16 @@ func resolveOCIPayload(ctx context.Context, cfg *TaskConfig, cacheDir string, lo
 	}
 	logger.Info("OCI metadata read", "overrides_present", overrides != nil)
 
+	// Build the base config from the OCI image (metadata + filesystem defaults),
+	// then let the job's explicit settings win on top — mirroring how
+	// `docker run --entrypoint` overrides the image entrypoint.
+	ociBase := &TaskConfig{OCIImage: cfg.OCIImage}
 	if overrides != nil {
-		applyTaskConfigOverrides(cfg, overrides, artifact.WorkDir, logger)
+		applyTaskConfigOverrides(ociBase, overrides, artifact.WorkDir, logger)
 	}
-
-	applyOCIPayloadDefaults(cfg, artifact.WorkDir, logger)
+	applyOCIPayloadDefaults(ociBase, artifact.WorkDir, logger)
+	applyJobConfig(ociBase, cfg, logger)
+	*cfg = *ociBase
 	return nil
 }
 
@@ -142,6 +147,44 @@ func applyTaskConfigOverrides(cfg *TaskConfig, overrides *TaskConfigOverrides, b
 	if overrides.Serial != "" {
 		cfg.Serial = overrides.Serial
 		logger.Info("OCI override applied", "field", "serial", "value", cfg.Serial)
+	}
+}
+
+// applyJobConfig merges non-zero fields from the job's task config onto base,
+// giving the job's explicit settings priority over whatever the OCI image
+// provides — analogous to overriding a Docker image entrypoint at run time.
+func applyJobConfig(base, job *TaskConfig, logger hclog.Logger) {
+	if job.Payload.Kernel != "" {
+		base.Payload.Kernel = job.Payload.Kernel
+		logger.Info("job config override", "field", "payload.kernel", "value", job.Payload.Kernel)
+	}
+	if job.Payload.Initramfs != "" {
+		base.Payload.Initramfs = job.Payload.Initramfs
+		logger.Info("job config override", "field", "payload.initramfs", "value", job.Payload.Initramfs)
+	}
+	if job.Payload.Cmdline != "" {
+		base.Payload.Cmdline = job.Payload.Cmdline
+		logger.Info("job config override", "field", "payload.cmdline", "value", job.Payload.Cmdline)
+	}
+	if len(job.Disk) > 0 {
+		base.Disk = job.Disk
+		logger.Info("job config override", "field", "disk", "entries", len(job.Disk))
+	}
+	if job.Console.Mode != "" {
+		base.Console.Mode = job.Console.Mode
+		logger.Info("job config override", "field", "console.mode", "value", job.Console.Mode)
+	}
+	if len(job.Network) > 0 {
+		base.Network = job.Network
+		logger.Info("job config override", "field", "network", "entries", len(job.Network))
+	}
+	if job.CloudInit != nil {
+		base.CloudInit = job.CloudInit
+		logger.Info("job config override", "field", "cloud-init")
+	}
+	if job.Serial != "" {
+		base.Serial = job.Serial
+		logger.Info("job config override", "field", "serial", "value", job.Serial)
 	}
 }
 
