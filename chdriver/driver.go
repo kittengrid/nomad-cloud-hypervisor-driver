@@ -23,6 +23,7 @@ import (
 	"github.com/hashicorp/nomad/plugins/drivers"
 	"github.com/hashicorp/nomad/plugins/shared/hclspec"
 	"github.com/hashicorp/nomad/plugins/shared/structs"
+	"github.com/kittengrid/nomad-cloud-hypervisor-driver/internal/cloudinit"
 	"github.com/kittengrid/nomad-cloud-hypervisor-driver/internal/oci"
 )
 
@@ -414,7 +415,7 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 	// across driver restarts together with the rest of the allocation data.
 	if driverConfig.CloudInit != nil && driverConfig.CloudInit.UserData != "" {
 		isoPath := filepath.Join(cfg.TaskDir().LocalDir, "cloud-init-seed.iso")
-		if err := createCloudInitISO(driverConfig.CloudInit, isoPath, d.logger); err != nil {
+		if err := cloudinit.CreateISO(driverConfig.CloudInit.UserData, driverConfig.CloudInit.MetaData, isoPath, d.logger); err != nil {
 			return nil, nil, fmt.Errorf("failed to create cloud-init ISO: %v", err)
 		}
 		// Append the generated ISO as a read-only disk so the task config
