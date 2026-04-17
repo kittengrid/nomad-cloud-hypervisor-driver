@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/kittengrid/nomad-cloud-hypervisor-driver/internal/oci"
 )
 
 type TaskPayloadOverride struct {
@@ -83,12 +84,12 @@ func resolveOCIPayload(ctx context.Context, cfg *TaskConfig, cacheDir string, lo
 		return fmt.Errorf("create cache dir: %w", err)
 	}
 
-	pullOptions := PullOptions{
+	pullOptions := oci.PullOptions{
 		Reference: cfg.OCIImage,
 		CacheDir:  cacheDir,
 	}
 
-	artifact, err := PullIntoCache(ctx, pullOptions, logger)
+	artifact, err := oci.PullIntoCache(ctx, pullOptions, logger)
 	if err != nil {
 		return fmt.Errorf("pull OCI payload: %w", err)
 	}

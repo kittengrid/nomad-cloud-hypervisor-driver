@@ -18,9 +18,9 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/kittengrid/nomad-cloud-hypervisor-driver/internal/oci"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	oras "oras.land/oras-go/v2"
-	"oras.land/oras-go/v2/content/file"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
 	"oras.land/oras-go/v2/registry/remote/retry"
@@ -251,68 +251,10 @@ func fileExists(path string) bool {
 
 // readConfigAndLayers materializes the OCI manifest into a filesystem layout
 // with the expected filenames used by the driver.
-func readConfigAndLayers(ctx context.Context, repo *remote.Repository, ref string, workDir string) error {
-	desc, err := oras.Resolve(ctx, repo, ref, oras.DefaultResolveOptions)
-	if err != nil {
-		return err
-	}
-	_, manifestBytes, err := oras.FetchBytes(ctx, repo, desc.Digest.String(), oras.DefaultFetchBytesOptions)
-	if err != nil {
-		return err
-	}
-
-	var manifest ocispec.Manifest
-	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
-		return err
-	}
-
-	if manifest.Config.Digest != "" {
-		_, configBytes, err := oras.FetchBytes(ctx, repo, manifest.Config.Digest.String(), oras.DefaultFetchBytesOptions)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(workDir, "metadata.json"), configBytes, 0o644); err != nil {
-			return err
-		}
-	}
-
-	for _, layer := range manifest.Layers {
-		name := layer.Annotations[ocispec.AnnotationTitle]
-		if name == "" {
-			continue
-		}
-		_, data, err := oras.FetchBytes(ctx, repo, layer.Digest.String(), oras.DefaultFetchBytesOptions)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(workDir, name), data, 0o644); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// fileStoreCopyFallback is kept for compatibility with any older layouts that
-// are copied verbatim by oras.
-func fileStoreCopyFallback(ctx context.Context, repo *remote.Repository, ref string, workDir string) error {
-	fs, err := file.New(workDir)
-	if err != nil {
-		return err
-	}
-	defer fs.Close()
-
-	_, err = oras.Copy(ctx, repo, ref, fs, "", oras.DefaultCopyOptions)
-	return err
-}
-
 // MaterializeOCIImage attempts to fetch an OCI image from a registry into a
 // working directory using the driver's expected file layout.
 func MaterializeOCIImage(ctx context.Context, repo *remote.Repository, ref string, workDir string) error {
-	if err := readConfigAndLayers(ctx, repo, ref, workDir); err == nil {
-		return nil
-	}
-	return fileStoreCopyFallback(ctx, repo, ref, workDir)
+	return oci.MaterializeImageWithFallback(ctx, repo, ref, workDir)
 }
 
 func getLogger() hclog.Logger {

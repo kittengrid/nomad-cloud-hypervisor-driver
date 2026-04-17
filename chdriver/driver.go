@@ -23,6 +23,7 @@ import (
 	"github.com/hashicorp/nomad/plugins/drivers"
 	"github.com/hashicorp/nomad/plugins/shared/hclspec"
 	"github.com/hashicorp/nomad/plugins/shared/structs"
+	"github.com/kittengrid/nomad-cloud-hypervisor-driver/internal/oci"
 )
 
 const (
@@ -441,12 +442,12 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 			}
 
 			// If the disk is specified as an OCI image, we need to pull it and convert it to a qcow2 image before starting the VM.
-			pullOptions := PullOptions{
+			pullOptions := oci.PullOptions{
 				Reference: disk.OCIImage,
 				CacheDir:  d.config.CacheDir,
 			}
 
-			ociImagePath, err := PullIntoCache(context.Background(), pullOptions, d.logger)
+			ociImagePath, err := oci.PullIntoCache(context.Background(), pullOptions, d.logger)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to pull OCI image: %v", err)
 			}

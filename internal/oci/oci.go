@@ -1,4 +1,4 @@
-package chdriver
+package oci
 
 import (
 	"context"
@@ -6,25 +6,32 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/hashicorp/go-hclog"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	oras "oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
+	"oras.land/oras-go/v2/content/file"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
 	"oras.land/oras-go/v2/registry/remote/credentials"
 	"oras.land/oras-go/v2/registry/remote/retry"
 )
 
+// PullOptions describes how to pull an OCI artifact into a local cache.
 type PullOptions struct {
 	Reference string // e.g. ghcr.io/myorg/vm-images/ubuntu22.04:2026-04-02
 	CacheDir  string // absolute base cache dir
 }
 
+// PulledArtifact describes the location of a materialized OCI artifact.
 type PulledArtifact struct {
 	WorkDir string
 }
 
+// PullIntoCache resolves, fetches, and materializes an OCI artifact into a
+// deterministic cache directory based on the manifest digest.
 func PullIntoCache(ctx context.Context, opts PullOptions, logger hclog.Logger) (*PulledArtifact, error) {
 	repo, err := remote.NewRepository(opts.Reference)
 	if err != nil {
@@ -54,15 +61,26 @@ func PullIntoCache(ctx context.Context, opts PullOptions, logger hclog.Logger) (
 		return nil, fmt.Errorf("mkdir cache dir: %w", err)
 	}
 
-	if err := materializeOCIImage(ctx, repo, repo.Reference.Reference, workDir, logger); err == nil {
-		return &PulledArtifact{WorkDir: workDir}, nil
-	} else {
+	if err := MaterializeImageWithFallback(ctx, repo, repo.Reference.Reference, workDir); err != nil {
 		return nil, fmt.Errorf("materialize OCI image: %w", err)
 	}
+
+	return &PulledArtifact{WorkDir: workDir}, nil
 }
 
-func materializeOCIImage(ctx context.Context, repo *remote.Repository, ref string, workDir string, logger hclog.Logger) error {
+// MaterializeImageWithFallback materializes an OCI image into workDir using
+// the preferred descriptor-based approach, falling back to oras.Copy for
+// older layouts.
+func MaterializeImageWithFallback(ctx context.Context, repo *remote.Repository, ref, workDir string) error {
+	if err := MaterializeImage(ctx, repo, ref, workDir); err == nil {
+		return nil
+	}
+	return fileStoreCopyFallback(ctx, repo, ref, workDir)
+}
 
+// MaterializeImage fetches the manifest/config/layers and writes them to
+// workDir using the driver-expected filenames.
+func MaterializeImage(ctx context.Context, repo *remote.Repository, ref, workDir string) error {
 	manifestDesc, err := repo.Resolve(ctx, ref)
 	if err != nil {
 		return fmt.Errorf("resolve manifest %q: %w", ref, err)
@@ -121,4 +139,25 @@ func materializeOCIImage(ctx context.Context, repo *remote.Repository, ref strin
 	}
 
 	return nil
+}
+
+// fileStoreCopyFallback is kept for compatibility with any older layouts that
+// are copied verbatim by oras.
+func fileStoreCopyFallback(ctx context.Context, repo *remote.Repository, ref, workDir string) error {
+	fs, err := file.New(workDir)
+	if err != nil {
+		return err
+	}
+	defer fs.Close()
+
+	_, err = oras.Copy(ctx, repo, ref, fs, "", oras.DefaultCopyOptions)
+	return err
+}
+
+func isLocalRegistry(host string) bool {
+	host = strings.ToLower(host)
+	return host == "localhost" ||
+		strings.HasPrefix(host, "localhost:") ||
+		strings.HasPrefix(host, "127.0.0.1") ||
+		strings.HasPrefix(host, "[::1]")
 }
