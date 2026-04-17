@@ -18,6 +18,10 @@ import (
 	"oras.land/oras-go/v2/registry/remote/retry"
 )
 
+// ProgressFunc is called with a human-readable status message during artifact
+// download so callers can surface progress to users (e.g. via Nomad task events).
+type ProgressFunc func(msg string)
+
 // PullOptions describes how to pull an OCI artifact into a local cache.
 type PullOptions struct {
 	Reference string // e.g. ghcr.io/myorg/vm-images/ubuntu22.04:2026-04-02
@@ -30,8 +34,9 @@ type PulledArtifact struct {
 }
 
 // PullIntoCache resolves, fetches, and materializes an OCI artifact into a
-// deterministic cache directory based on the manifest digest.
-func PullIntoCache(ctx context.Context, opts PullOptions, logger hclog.Logger) (*PulledArtifact, error) {
+// deterministic cache directory based on the manifest digest. progress, if
+// non-nil, is called with status messages during the download.
+func PullIntoCache(ctx context.Context, opts PullOptions, logger hclog.Logger, progress ProgressFunc) (*PulledArtifact, error) {
 	repo, err := openRepository(opts.Reference)
 	if err != nil {
 		return nil, err
@@ -48,7 +53,7 @@ func PullIntoCache(ctx context.Context, opts PullOptions, logger hclog.Logger) (
 		return nil, fmt.Errorf("mkdir cache dir: %w", err)
 	}
 
-	if err := MaterializeImage(ctx, repo, repo.Reference.Reference, workDir); err != nil {
+	if err := MaterializeImage(ctx, repo, repo.Reference.Reference, workDir, progress); err != nil {
 		return nil, fmt.Errorf("materialize OCI image: %w", err)
 	}
 
@@ -85,8 +90,9 @@ func FetchMetadata(ctx context.Context, reference string) ([]byte, error) {
 
 // MaterializeImage fetches the manifest/config/layers and writes them to
 // workDir using the driver-expected filenames. Blobs are streamed directly to
-// disk without buffering their content in memory.
-func MaterializeImage(ctx context.Context, repo *remote.Repository, ref, workDir string) error {
+// disk without buffering their content in memory. progress, if non-nil, is
+// called with status messages as each layer is fetched.
+func MaterializeImage(ctx context.Context, repo *remote.Repository, ref, workDir string, progress ProgressFunc) error {
 	manifest, err := fetchManifest(ctx, repo, ref)
 	if err != nil {
 		return err
@@ -103,8 +109,14 @@ func MaterializeImage(ctx context.Context, repo *remote.Repository, ref, workDir
 		if name == "" {
 			continue
 		}
+		if progress != nil {
+			progress(fmt.Sprintf("Pulling %s (%s)", name, layer.Digest.String()[:19]))
+		}
 		if err := fetchBlobToFile(ctx, repo, layer, filepath.Join(workDir, name)); err != nil {
 			return fmt.Errorf("write layer %s: %w", name, err)
+		}
+		if progress != nil {
+			progress(fmt.Sprintf("Pulled %s", name))
 		}
 	}
 

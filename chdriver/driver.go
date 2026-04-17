@@ -436,7 +436,17 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 		}
 	}
 
-	if err := materializeOCIPayload(d.ctx, &driverConfig, d.config.CacheDir, d.logger); err != nil {
+	progress := func(msg string) {
+		d.eventer.EmitEvent(&drivers.TaskEvent{
+			TaskID:    cfg.ID,
+			TaskName:  cfg.Name,
+			AllocID:   cfg.AllocID,
+			Timestamp: time.Now(),
+			Message:   msg,
+		})
+	}
+
+	if err := materializeOCIPayload(d.ctx, &driverConfig, d.config.CacheDir, d.logger, progress); err != nil {
 		return nil, nil, fmt.Errorf("materialize OCI payload: %v", err)
 	}
 

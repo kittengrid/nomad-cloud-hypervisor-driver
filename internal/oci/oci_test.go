@@ -48,7 +48,7 @@ poweroff -f
 
 	cacheDir := t.TempDir()
 	logger := hclog.NewNullLogger()
-	artifact, err := PullIntoCache(ctx, PullOptions{Reference: ref, CacheDir: cacheDir}, logger)
+	artifact, err := PullIntoCache(ctx, PullOptions{Reference: ref, CacheDir: cacheDir}, logger, nil)
 	if err != nil {
 		t.Fatalf("pull into cache: %v", err)
 	}

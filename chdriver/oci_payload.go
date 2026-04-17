@@ -174,13 +174,13 @@ func applyOCIArtifact(cfg *TaskConfig, workDir string, logger hclog.Logger) {
 // on top of base, giving the job's explicit settings priority over whatever the
 // OCI image provides — analogous to overriding a Docker image entrypoint at
 // run time.
-func materializeOCIPayload(ctx context.Context, cfg *TaskConfig, cacheDir string, logger hclog.Logger) error {
+func materializeOCIPayload(ctx context.Context, cfg *TaskConfig, cacheDir string, logger hclog.Logger, progress oci.ProgressFunc) error {
 	if cfg == nil || cfg.OCIImage == "" {
 		return nil
 	}
 
 	logger.Info("Materializing OCI payload", "oci_image", cfg.OCIImage, "cache_dir", cacheDir)
-	artifact, err := oci.PullIntoCache(ctx, oci.PullOptions{Reference: cfg.OCIImage, CacheDir: cacheDir}, logger)
+	artifact, err := oci.PullIntoCache(ctx, oci.PullOptions{Reference: cfg.OCIImage, CacheDir: cacheDir}, logger, progress)
 	if err != nil {
 		return fmt.Errorf("pull OCI payload: %w", err)
 	}
