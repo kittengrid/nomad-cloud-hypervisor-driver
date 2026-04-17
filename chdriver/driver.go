@@ -152,35 +152,35 @@ type Config struct {
 
 // TaskPayloadConfig corresponds to PayloadConfig in chtypes.
 type TaskPayloadConfig struct {
-	Kernel    string `codec:"kernel"`
-	Initramfs string `codec:"initramfs"`
-	Cmdline   string `codec:"cmdline"`
+	Kernel    string `codec:"kernel"    json:"kernel,omitempty"`
+	Initramfs string `codec:"initramfs" json:"initramfs,omitempty"`
+	Cmdline   string `codec:"cmdline"   json:"cmdline,omitempty"`
 }
 
 // TaskDiskConfig corresponds to DiskConfig in chtypes.
 type TaskDiskConfig struct {
-	Path             string `codec:"path"`
-	ImageType        string `codec:"image_type"`
-	Readonly         bool   `codec:"readonly"`
-	EphemeralOverlay bool   `codec:"ephemeral_overlay"`
-	OCIImage         string `codec:"oci_image"`
+	Path             string `codec:"path"              json:"path,omitempty"`
+	ImageType        string `codec:"image_type"        json:"image_type,omitempty"`
+	Readonly         bool   `codec:"readonly"          json:"readonly"`
+	EphemeralOverlay bool   `codec:"ephemeral_overlay" json:"ephemeral_overlay"`
+	OCIImage         string `codec:"oci_image"         json:"oci_image,omitempty"`
 }
 
 // TaskConsoleConfig corresponds to ConsoleConfig in chtypes (required fields only).
 type TaskConsoleConfig struct {
-	Mode string `codec:"mode"`
+	Mode string `codec:"mode" json:"mode,omitempty"`
 }
 
 type TaskNetworkConfig struct {
-	Mac              string `codec:"mac"`
-	Tap              string `codec:"tap"`
-	AutoTuntap       bool   `codec:"auto-tuntap"`
-	AutoTuntapBridge string `codec:"auto-tuntap-bridge"`
+	Mac              string `codec:"mac"                json:"mac,omitempty"`
+	Tap              string `codec:"tap"                json:"tap,omitempty"`
+	AutoTuntap       bool   `codec:"auto-tuntap"        json:"auto-tuntap"`
+	AutoTuntapBridge string `codec:"auto-tuntap-bridge" json:"auto-tuntap-bridge,omitempty"`
 }
 
 type CloudInit struct {
-	UserData string `codec:"user-data"`
-	MetaData string `codec:"meta-data"`
+	UserData string `codec:"user-data" json:"user-data,omitempty"`
+	MetaData string `codec:"meta-data" json:"meta-data,omitempty"`
 }
 
 // TaskConfig contains configuration information for a task that runs with

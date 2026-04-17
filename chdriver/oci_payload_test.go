@@ -60,28 +60,28 @@ func TestApplyTaskConfigOverrides(t *testing.T) {
 
 	cfg := &TaskConfig{}
 	overrides := &TaskConfigOverrides{
-		Payload: &TaskPayloadOverride{
-			Kernel:    ptr("vmlinuz"),
-			Initramfs: ptr("initramfs.img"),
-			Cmdline:   ptr("console=ttyS0"),
+		Payload: &TaskPayloadConfig{
+			Kernel:    "vmlinuz",
+			Initramfs: "initramfs.img",
+			Cmdline:   "console=ttyS0",
 		},
-		Disk: []TaskDiskOverride{
+		Disk: []TaskDiskConfig{
 			{
-				Path:      ptr("rootfs.raw"),
-				ImageType: ptr("raw"),
-				Readonly:  ptr(true),
+				Path:      "rootfs.raw",
+				ImageType: "raw",
+				Readonly:  true,
 			},
 		},
-		Console: &TaskConsoleOverride{Mode: ptr("Tty")},
-		Network: []TaskNetworkOverride{
+		Console: &TaskConsoleConfig{Mode: "Tty"},
+		Network: []TaskNetworkConfig{
 			{
-				Mac:              ptr("52:54:00:aa:bb:cc"),
-				AutoTuntap:       ptr(true),
-				AutoTuntapBridge: ptr("br0"),
+				Mac:              "52:54:00:aa:bb:cc",
+				AutoTuntap:       true,
+				AutoTuntapBridge: "br0",
 			},
 		},
-		CloudInit: &CloudInitOverride{UserData: ptr("#cloud-config\n")},
-		Serial:    ptr("socket=/tmp/serial"),
+		CloudInit: &CloudInit{UserData: "#cloud-config\n"},
+		Serial:    "socket=/tmp/serial",
 	}
 
 	logger := hclog.NewNullLogger()
@@ -118,8 +118,4 @@ func TestApplyOCIPayloadDefaults(t *testing.T) {
 	must.SliceLen(t, 1, cfg.Disk)
 	must.Eq(t, filepath.Join(dir, "rootfs.qcow2"), cfg.Disk[0].Path)
 	must.Eq(t, "qcow2", cfg.Disk[0].ImageType)
-}
-
-func ptr[T any](value T) *T {
-	return &value
 }

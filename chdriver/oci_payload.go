@@ -28,43 +28,13 @@ import (
 	"github.com/kittengrid/nomad-cloud-hypervisor-driver/internal/oci"
 )
 
-type TaskPayloadOverride struct {
-	Kernel    *string `json:"kernel,omitempty"`
-	Initramfs *string `json:"initramfs,omitempty"`
-	Cmdline   *string `json:"cmdline,omitempty"`
-}
-
-type TaskDiskOverride struct {
-	Path             *string `json:"path,omitempty"`
-	ImageType        *string `json:"image_type,omitempty"`
-	Readonly         *bool   `json:"readonly,omitempty"`
-	EphemeralOverlay *bool   `json:"ephemeral_overlay,omitempty"`
-	OCIImage         *string `json:"oci_image,omitempty"`
-}
-
-type TaskConsoleOverride struct {
-	Mode *string `json:"mode,omitempty"`
-}
-
-type TaskNetworkOverride struct {
-	Mac              *string `json:"mac,omitempty"`
-	Tap              *string `json:"tap,omitempty"`
-	AutoTuntap       *bool   `json:"auto-tuntap,omitempty"`
-	AutoTuntapBridge *string `json:"auto-tuntap-bridge,omitempty"`
-}
-
-type CloudInitOverride struct {
-	UserData *string `json:"user-data,omitempty"`
-	MetaData *string `json:"meta-data,omitempty"`
-}
-
 type TaskConfigOverrides struct {
-	Payload   *TaskPayloadOverride  `json:"payload,omitempty"`
-	Disk      []TaskDiskOverride    `json:"disk,omitempty"`
-	Console   *TaskConsoleOverride  `json:"console,omitempty"`
-	Network   []TaskNetworkOverride `json:"network,omitempty"`
-	CloudInit *CloudInitOverride    `json:"cloud-init,omitempty"`
-	Serial    *string               `json:"serial,omitempty"`
+	Payload   *TaskPayloadConfig   `json:"payload,omitempty"`
+	Disk      []TaskDiskConfig     `json:"disk,omitempty"`
+	Console   *TaskConsoleConfig   `json:"console,omitempty"`
+	Network   []TaskNetworkConfig  `json:"network,omitempty"`
+	CloudInit *CloudInit           `json:"cloud-init,omitempty"`
+	Serial    string               `json:"serial,omitempty"`
 }
 
 type OCIMetadata struct {
@@ -132,88 +102,45 @@ func applyTaskConfigOverrides(cfg *TaskConfig, overrides *TaskConfigOverrides, b
 	}
 
 	if overrides.Payload != nil {
-		if overrides.Payload.Kernel != nil {
-			resolved := resolvePath(baseDir, *overrides.Payload.Kernel)
-			cfg.Payload.Kernel = resolved
-			logger.Info("OCI override applied", "field", "payload.kernel", "value", resolved)
+		if overrides.Payload.Kernel != "" {
+			cfg.Payload.Kernel = resolvePath(baseDir, overrides.Payload.Kernel)
+			logger.Info("OCI override applied", "field", "payload.kernel", "value", cfg.Payload.Kernel)
 		}
-		if overrides.Payload.Initramfs != nil {
-			resolved := resolvePath(baseDir, *overrides.Payload.Initramfs)
-			cfg.Payload.Initramfs = resolved
-			logger.Info("OCI override applied", "field", "payload.initramfs", "value", resolved)
+		if overrides.Payload.Initramfs != "" {
+			cfg.Payload.Initramfs = resolvePath(baseDir, overrides.Payload.Initramfs)
+			logger.Info("OCI override applied", "field", "payload.initramfs", "value", cfg.Payload.Initramfs)
 		}
-		if overrides.Payload.Cmdline != nil {
-			cfg.Payload.Cmdline = *overrides.Payload.Cmdline
+		if overrides.Payload.Cmdline != "" {
+			cfg.Payload.Cmdline = overrides.Payload.Cmdline
 			logger.Info("OCI override applied", "field", "payload.cmdline", "value", cfg.Payload.Cmdline)
 		}
 	}
 
-	if overrides.Disk != nil {
-		cfg.Disk = make([]TaskDiskConfig, 0, len(overrides.Disk))
-		logger.Info("OCI override applied", "field", "disk", "entries", len(overrides.Disk))
-		for _, disk := range overrides.Disk {
-			updated := TaskDiskConfig{}
-			if disk.Path != nil {
-				updated.Path = resolvePath(baseDir, *disk.Path)
-			}
-			if disk.ImageType != nil {
-				updated.ImageType = *disk.ImageType
-			}
-			if disk.Readonly != nil {
-				updated.Readonly = *disk.Readonly
-			}
-			if disk.EphemeralOverlay != nil {
-				updated.EphemeralOverlay = *disk.EphemeralOverlay
-			}
-			if disk.OCIImage != nil {
-				updated.OCIImage = *disk.OCIImage
-			}
-			cfg.Disk = append(cfg.Disk, updated)
+	if len(overrides.Disk) > 0 {
+		cfg.Disk = overrides.Disk
+		for i := range cfg.Disk {
+			cfg.Disk[i].Path = resolvePath(baseDir, cfg.Disk[i].Path)
 		}
+		logger.Info("OCI override applied", "field", "disk", "entries", len(cfg.Disk))
 	}
 
-	if overrides.Console != nil {
-		if overrides.Console.Mode != nil {
-			cfg.Console.Mode = *overrides.Console.Mode
-			logger.Info("OCI override applied", "field", "console.mode", "value", cfg.Console.Mode)
-		}
+	if overrides.Console != nil && overrides.Console.Mode != "" {
+		cfg.Console.Mode = overrides.Console.Mode
+		logger.Info("OCI override applied", "field", "console.mode", "value", cfg.Console.Mode)
 	}
 
-	if overrides.Network != nil {
-		cfg.Network = make([]TaskNetworkConfig, 0, len(overrides.Network))
-		logger.Info("OCI override applied", "field", "network", "entries", len(overrides.Network))
-		for _, net := range overrides.Network {
-			updated := TaskNetworkConfig{}
-			if net.Mac != nil {
-				updated.Mac = *net.Mac
-			}
-			if net.Tap != nil {
-				updated.Tap = *net.Tap
-			}
-			if net.AutoTuntap != nil {
-				updated.AutoTuntap = *net.AutoTuntap
-			}
-			if net.AutoTuntapBridge != nil {
-				updated.AutoTuntapBridge = *net.AutoTuntapBridge
-			}
-			cfg.Network = append(cfg.Network, updated)
-		}
+	if len(overrides.Network) > 0 {
+		cfg.Network = overrides.Network
+		logger.Info("OCI override applied", "field", "network", "entries", len(cfg.Network))
 	}
 
 	if overrides.CloudInit != nil {
-		cfg.CloudInit = &CloudInit{}
+		cfg.CloudInit = overrides.CloudInit
 		logger.Info("OCI override applied", "field", "cloud-init")
-		if overrides.CloudInit.UserData != nil {
-			cfg.CloudInit.UserData = *overrides.CloudInit.UserData
-			logger.Info("OCI override applied", "field", "cloud-init.user-data")
-		}
-		if overrides.CloudInit.MetaData != nil {
-			cfg.CloudInit.MetaData = *overrides.CloudInit.MetaData
-			logger.Info("OCI override applied", "field", "cloud-init.meta-data")
-		}
 	}
-	if overrides.Serial != nil {
-		cfg.Serial = *overrides.Serial
+
+	if overrides.Serial != "" {
+		cfg.Serial = overrides.Serial
 		logger.Info("OCI override applied", "field", "serial", "value", cfg.Serial)
 	}
 }
