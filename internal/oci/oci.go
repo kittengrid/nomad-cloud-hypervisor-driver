@@ -99,7 +99,7 @@ func MaterializeImage(ctx context.Context, repo *remote.Repository, ref, workDir
 	}
 
 	if manifest.Config.Digest != "" {
-		if err := fetchBlobToFile(ctx, repo, manifest.Config, filepath.Join(workDir, "metadata.json")); err != nil {
+		if err := fetchBlobToFile(ctx, repo, manifest.Config, filepath.Join(workDir, "metadata.json"), nil); err != nil {
 			return fmt.Errorf("write metadata.json: %w", err)
 		}
 	}
@@ -110,9 +110,15 @@ func MaterializeImage(ctx context.Context, repo *remote.Repository, ref, workDir
 			continue
 		}
 		if progress != nil {
-			progress(fmt.Sprintf("Pulling %s (%s)", name, layer.Digest.String()[:19]))
+			progress(fmt.Sprintf("Pulling %s", name))
 		}
-		if err := fetchBlobToFile(ctx, repo, layer, filepath.Join(workDir, name)); err != nil {
+		var onPct func(int)
+		if progress != nil && layer.Size > 0 {
+			onPct = func(pct int) {
+				progress(fmt.Sprintf("Pulling %s: %d%%", name, pct))
+			}
+		}
+		if err := fetchBlobToFile(ctx, repo, layer, filepath.Join(workDir, name), onPct); err != nil {
 			return fmt.Errorf("write layer %s: %w", name, err)
 		}
 		if progress != nil {
@@ -124,8 +130,9 @@ func MaterializeImage(ctx context.Context, repo *remote.Repository, ref, workDir
 }
 
 // fetchBlobToFile streams a blob from the repository directly into a local
-// file without buffering the content in memory.
-func fetchBlobToFile(ctx context.Context, repo *remote.Repository, desc ocispec.Descriptor, path string) error {
+// file without buffering the content in memory. onPct, if non-nil, is called
+// with the download percentage each time progress crosses a 5% boundary.
+func fetchBlobToFile(ctx context.Context, repo *remote.Repository, desc ocispec.Descriptor, path string, onPct func(int)) error {
 	rc, err := repo.Fetch(ctx, desc)
 	if err != nil {
 		return fmt.Errorf("fetch %s: %w", desc.Digest, err)
@@ -138,10 +145,38 @@ func fetchBlobToFile(ctx context.Context, repo *remote.Repository, desc ocispec.
 	}
 	defer f.Close()
 
-	if _, err := io.Copy(f, rc); err != nil {
+	var r io.Reader = rc
+	if onPct != nil {
+		r = &pctReader{r: rc, total: desc.Size, onPct: onPct}
+	}
+	if _, err := io.Copy(f, r); err != nil {
 		return fmt.Errorf("stream to %s: %w", path, err)
 	}
 	return nil
+}
+
+// pctReader wraps an io.Reader and calls onPct each time the download crosses
+// a 5-percentage-point boundary, giving callers cheap progress reporting
+// without flooding them with per-read callbacks.
+type pctReader struct {
+	r       io.Reader
+	total   int64
+	read    int64
+	lastPct int
+	onPct   func(int)
+}
+
+func (p *pctReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.read += int64(n)
+		pct := int(p.read * 100 / p.total)
+		if pct >= p.lastPct+5 {
+			p.lastPct = pct
+			p.onPct(pct)
+		}
+	}
+	return n, err
 }
 
 func openRepository(reference string) (*remote.Repository, error) {
