@@ -36,6 +36,9 @@ type PulledArtifact struct {
 // PullIntoCache resolves, fetches, and materializes an OCI artifact into a
 // deterministic cache directory based on the manifest digest. progress, if
 // non-nil, is called with status messages during the download.
+//
+// If the cache directory already contains a .complete marker from a previous
+// successful download, the download is skipped entirely.
 func PullIntoCache(ctx context.Context, opts PullOptions, logger hclog.Logger, progress ProgressFunc) (*PulledArtifact, error) {
 	repo, err := openRepository(opts.Reference)
 	if err != nil {
@@ -43,18 +46,35 @@ func PullIntoCache(ctx context.Context, opts PullOptions, logger hclog.Logger, p
 	}
 
 	// Resolve the tag/digest first so we get the immutable manifest descriptor.
+	// This is a cheap registry round-trip and is required even for cache hits
+	// because tags are mutable.
 	desc, err := repo.Resolve(ctx, repo.Reference.Reference)
 	if err != nil {
 		return nil, fmt.Errorf("resolve reference: %w", err)
 	}
 
 	workDir := filepath.Join(opts.CacheDir, "sha256-"+desc.Digest.Encoded())
+
+	// A .complete marker means a previous run fully downloaded this digest.
+	// The directory name already encodes the digest, so its presence is
+	// sufficient to guarantee consistency.
+	if _, err := os.Stat(filepath.Join(workDir, ".complete")); err == nil {
+		logger.Info("OCI cache hit, skipping download", "digest", desc.Digest.String())
+		return &PulledArtifact{WorkDir: workDir}, nil
+	}
+
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir cache dir: %w", err)
 	}
 
 	if err := MaterializeImage(ctx, repo, repo.Reference.Reference, workDir, progress); err != nil {
 		return nil, fmt.Errorf("materialize OCI image: %w", err)
+	}
+
+	// Write the sentinel only after a fully successful download so that an
+	// interrupted pull is retried on the next call.
+	if err := os.WriteFile(filepath.Join(workDir, ".complete"), []byte{}, 0o644); err != nil {
+		return nil, fmt.Errorf("write cache marker: %w", err)
 	}
 
 	return &PulledArtifact{WorkDir: workDir}, nil
@@ -171,7 +191,7 @@ func (p *pctReader) Read(b []byte) (int, error) {
 	if n > 0 {
 		p.read += int64(n)
 		pct := int(p.read * 100 / p.total)
-		if pct >= p.lastPct+5 {
+		if pct >= p.lastPct+3 {
 			p.lastPct = pct
 			p.onPct(pct)
 		}
