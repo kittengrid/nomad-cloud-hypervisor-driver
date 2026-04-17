@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,7 +84,8 @@ func FetchMetadata(ctx context.Context, reference string) ([]byte, error) {
 }
 
 // MaterializeImage fetches the manifest/config/layers and writes them to
-// workDir using the driver-expected filenames.
+// workDir using the driver-expected filenames. Blobs are streamed directly to
+// disk without buffering their content in memory.
 func MaterializeImage(ctx context.Context, repo *remote.Repository, ref, workDir string) error {
 	manifest, err := fetchManifest(ctx, repo, ref)
 	if err != nil {
@@ -91,16 +93,7 @@ func MaterializeImage(ctx context.Context, repo *remote.Repository, ref, workDir
 	}
 
 	if manifest.Config.Digest != "" {
-		rc, err := repo.Fetch(ctx, manifest.Config)
-		if err != nil {
-			return fmt.Errorf("fetch config blob %s: %w", manifest.Config.Digest, err)
-		}
-		configBytes, err := content.ReadAll(rc, manifest.Config)
-		rc.Close()
-		if err != nil {
-			return fmt.Errorf("read config blob %s: %w", manifest.Config.Digest, err)
-		}
-		if err := os.WriteFile(filepath.Join(workDir, "metadata.json"), configBytes, 0o644); err != nil {
+		if err := fetchBlobToFile(ctx, repo, manifest.Config, filepath.Join(workDir, "metadata.json")); err != nil {
 			return fmt.Errorf("write metadata.json: %w", err)
 		}
 	}
@@ -110,22 +103,32 @@ func MaterializeImage(ctx context.Context, repo *remote.Repository, ref, workDir
 		if name == "" {
 			continue
 		}
-
-		rc, err := repo.Fetch(ctx, layer)
-		if err != nil {
-			return fmt.Errorf("fetch layer %s (%s): %w", name, layer.Digest, err)
-		}
-		data, err := content.ReadAll(rc, layer)
-		rc.Close()
-		if err != nil {
-			return fmt.Errorf("read layer %s (%s): %w", name, layer.Digest, err)
-		}
-
-		if err := os.WriteFile(filepath.Join(workDir, name), data, 0o644); err != nil {
+		if err := fetchBlobToFile(ctx, repo, layer, filepath.Join(workDir, name)); err != nil {
 			return fmt.Errorf("write layer %s: %w", name, err)
 		}
 	}
 
+	return nil
+}
+
+// fetchBlobToFile streams a blob from the repository directly into a local
+// file without buffering the content in memory.
+func fetchBlobToFile(ctx context.Context, repo *remote.Repository, desc ocispec.Descriptor, path string) error {
+	rc, err := repo.Fetch(ctx, desc)
+	if err != nil {
+		return fmt.Errorf("fetch %s: %w", desc.Digest, err)
+	}
+	defer rc.Close()
+
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", path, err)
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(f, rc); err != nil {
+		return fmt.Errorf("stream to %s: %w", path, err)
+	}
 	return nil
 }
 
