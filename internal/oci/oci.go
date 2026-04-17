@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/hashicorp/go-hclog"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -38,7 +39,10 @@ type PulledArtifact struct {
 // non-nil, is called with status messages during the download.
 //
 // If the cache directory already contains a .complete marker from a previous
-// successful download, the download is skipped entirely.
+// successful download, the download is skipped entirely. A per-digest lock file
+// ensures that concurrent callers (across processes) wait rather than racing:
+// the first caller downloads; subsequent callers see the .complete marker and
+// return immediately.
 func PullIntoCache(ctx context.Context, opts PullOptions, logger hclog.Logger, progress ProgressFunc) (*PulledArtifact, error) {
 	repo, err := openRepository(opts.Reference)
 	if err != nil {
@@ -55,16 +59,29 @@ func PullIntoCache(ctx context.Context, opts PullOptions, logger hclog.Logger, p
 
 	workDir := filepath.Join(opts.CacheDir, "sha256-"+desc.Digest.Encoded())
 
-	// A .complete marker means a previous run fully downloaded this digest.
-	// The directory name already encodes the digest, so its presence is
-	// sufficient to guarantee consistency.
+	// One lock file per digest. Closing the file releases the lock automatically,
+	// so defer takes care of cleanup whether we hit the cache or download.
+	lockPath := workDir + ".lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open lock file: %w", err)
+	}
+	defer lockFile.Close()
+
+	logger.Debug("waiting for OCI download lock", "digest", desc.Digest.String())
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return nil, fmt.Errorf("acquire download lock: %w", err)
+	}
+
+	// Re-check under the lock: another process may have completed the download
+	// while we were waiting.
 	if _, err := os.Stat(filepath.Join(workDir, ".complete")); err == nil {
 		logger.Info("OCI cache hit, skipping download", "digest", desc.Digest.String())
 		return &PulledArtifact{WorkDir: workDir}, nil
 	}
 
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir cache dir: %w", err)
+		return nil, fmt.Errorf("mkdir work dir: %w", err)
 	}
 
 	if err := MaterializeImage(ctx, repo, repo.Reference.Reference, workDir, progress); err != nil {
