@@ -12,7 +12,7 @@ import (
 	"github.com/shoenig/test/must"
 )
 
-func TestReadOCIMetadataOverrides(t *testing.T) {
+func TestReadOCIMetadata(t *testing.T) {
 	dir := t.TempDir()
 	metadataPath := filepath.Join(dir, "metadata.json")
 
@@ -45,7 +45,7 @@ func TestReadOCIMetadataOverrides(t *testing.T) {
 
 	must.NoError(t, os.WriteFile(metadataPath, []byte(metadata), 0o644))
 
-	overrides, err := readOCIMetadataOverrides(metadataPath, hclog.NewNullLogger())
+	overrides, err := readOCIMetadata(metadataPath, hclog.NewNullLogger())
 	must.NoError(t, err)
 	must.NotNil(t, overrides)
 	must.NotNil(t, overrides.Payload)
@@ -55,40 +55,31 @@ func TestReadOCIMetadataOverrides(t *testing.T) {
 	must.NotNil(t, overrides.CloudInit)
 }
 
-func TestApplyTaskConfigOverrides(t *testing.T) {
+func TestApplyOCIImageConfig(t *testing.T) {
 	dir := t.TempDir()
 
-	cfg := &TaskConfig{}
-	overrides := &TaskConfigOverrides{
+	// Write filesystem defaults so they get picked up.
+	must.NoError(t, os.WriteFile(filepath.Join(dir, "initrd.img"), []byte("initramfs"), 0o644))
+	must.NoError(t, os.WriteFile(filepath.Join(dir, "rootfs.qcow2"), []byte("rootfs"), 0o644))
+
+	metadata := &OCIMetadataConfig{
 		Payload: &TaskPayloadConfig{
-			Kernel:    "vmlinuz",
-			Initramfs: "initramfs.img",
-			Cmdline:   "console=ttyS0",
+			Kernel:  "vmlinuz",
+			Cmdline: "console=ttyS0",
 		},
 		Disk: []TaskDiskConfig{
-			{
-				Path:      "rootfs.raw",
-				ImageType: "raw",
-				Readonly:  true,
-			},
+			{Path: "rootfs.raw", ImageType: "raw", Readonly: true},
 		},
-		Console: &TaskConsoleConfig{Mode: "Tty"},
-		Network: []TaskNetworkConfig{
-			{
-				Mac:              "52:54:00:aa:bb:cc",
-				AutoTuntap:       true,
-				AutoTuntapBridge: "br0",
-			},
-		},
+		Console:   &TaskConsoleConfig{Mode: "Tty"},
+		Network:   []TaskNetworkConfig{{Mac: "52:54:00:aa:bb:cc", AutoTuntap: true, AutoTuntapBridge: "br0"}},
 		CloudInit: &CloudInit{UserData: "#cloud-config\n"},
 		Serial:    "socket=/tmp/serial",
 	}
 
-	logger := hclog.NewNullLogger()
-	applyTaskConfigOverrides(cfg, overrides, dir, logger)
+	cfg := buildConfigFromOCIMetadata(metadata, dir, hclog.NewNullLogger())
 
+	// Metadata fields are applied and relative paths resolved.
 	must.Eq(t, filepath.Join(dir, "vmlinuz"), cfg.Payload.Kernel)
-	must.Eq(t, filepath.Join(dir, "initramfs.img"), cfg.Payload.Initramfs)
 	must.Eq(t, "console=ttyS0", cfg.Payload.Cmdline)
 	must.SliceLen(t, 1, cfg.Disk)
 	must.Eq(t, filepath.Join(dir, "rootfs.raw"), cfg.Disk[0].Path)
@@ -102,51 +93,60 @@ func TestApplyTaskConfigOverrides(t *testing.T) {
 	must.NotNil(t, cfg.CloudInit)
 	must.Eq(t, "#cloud-config\n", cfg.CloudInit.UserData)
 	must.Eq(t, "socket=/tmp/serial", cfg.Serial)
+
+	// Initramfs was not in metadata so the filesystem default is used.
+	must.Eq(t, filepath.Join(dir, "initrd.img"), cfg.Payload.Initramfs)
+
+	// Disk was specified in metadata so the rootfs.qcow2 default is NOT added.
+	must.SliceLen(t, 1, cfg.Disk)
 }
 
-func TestApplyJobConfig(t *testing.T) {
-	// Base comes from OCI image; job config wins on every non-zero field.
-	base := &TaskConfig{
-		Payload:  TaskPayloadConfig{Kernel: "/oci/vmlinuz", Initramfs: "/oci/initrd.img", Cmdline: "console=ttyS0"},
-		Disk:     []TaskDiskConfig{{Path: "/oci/rootfs.qcow2", ImageType: "qcow2"}},
-		Console:  TaskConsoleConfig{Mode: "Tty"},
-		Network:  []TaskNetworkConfig{{AutoTuntap: true}},
-		CloudInit: &CloudInit{UserData: "#oci-cloud-config\n"},
-		Serial:   "tty",
-	}
-	job := &TaskConfig{
-		Payload: TaskPayloadConfig{Kernel: "/job/custom-kernel", Cmdline: "quiet"},
-		Serial:  "socket=/tmp/serial",
-	}
-
-	applyJobConfig(base, job, hclog.NewNullLogger())
-
-	// Job fields win.
-	must.Eq(t, "/job/custom-kernel", base.Payload.Kernel)
-	must.Eq(t, "quiet", base.Payload.Cmdline)
-	must.Eq(t, "socket=/tmp/serial", base.Serial)
-
-	// OCI fields survive where job left them empty.
-	must.Eq(t, "/oci/initrd.img", base.Payload.Initramfs)
-	must.SliceLen(t, 1, base.Disk)
-	must.Eq(t, "/oci/rootfs.qcow2", base.Disk[0].Path)
-	must.Eq(t, "Tty", base.Console.Mode)
-	must.SliceLen(t, 1, base.Network)
-	must.NotNil(t, base.CloudInit)
-}
-
-func TestApplyOCIPayloadDefaults(t *testing.T) {
+func TestApplyOCIImageConfig_NoMetadata(t *testing.T) {
 	dir := t.TempDir()
 	must.NoError(t, os.WriteFile(filepath.Join(dir, "vmlinuz"), []byte("kernel"), 0o644))
 	must.NoError(t, os.WriteFile(filepath.Join(dir, "initrd.img"), []byte("initramfs"), 0o644))
 	must.NoError(t, os.WriteFile(filepath.Join(dir, "rootfs.qcow2"), []byte("rootfs"), 0o644))
 
-	cfg := &TaskConfig{}
-	applyOCIPayloadDefaults(cfg, dir, hclog.NewNullLogger())
+	cfg := buildConfigFromOCIMetadata(nil, dir, hclog.NewNullLogger())
 
 	must.Eq(t, filepath.Join(dir, "vmlinuz"), cfg.Payload.Kernel)
 	must.Eq(t, filepath.Join(dir, "initrd.img"), cfg.Payload.Initramfs)
 	must.SliceLen(t, 1, cfg.Disk)
 	must.Eq(t, filepath.Join(dir, "rootfs.qcow2"), cfg.Disk[0].Path)
 	must.Eq(t, "qcow2", cfg.Disk[0].ImageType)
+}
+
+func TestApplyJobConfig(t *testing.T) {
+	base := TaskConfig{
+		Payload:   TaskPayloadConfig{Kernel: "/oci/vmlinuz", Initramfs: "/oci/initrd.img", Cmdline: "console=ttyS0"},
+		Disk:      []TaskDiskConfig{{Path: "/oci/rootfs.qcow2", ImageType: "qcow2"}},
+		Console:   TaskConsoleConfig{Mode: "Tty"},
+		Network:   []TaskNetworkConfig{{AutoTuntap: true}},
+		CloudInit: &CloudInit{UserData: "#oci-cloud-config\n"},
+		Serial:    "tty",
+	}
+	job := &TaskConfig{
+		Payload: TaskPayloadConfig{Kernel: "/job/custom-kernel", Cmdline: "quiet"},
+		Serial:  "socket=/tmp/serial",
+	}
+
+	result := applyJobConfig(base, job, hclog.NewNullLogger())
+
+	// Job fields win.
+	must.Eq(t, "/job/custom-kernel", result.Payload.Kernel)
+	must.Eq(t, "quiet", result.Payload.Cmdline)
+	must.Eq(t, "socket=/tmp/serial", result.Serial)
+
+	// OCI fields survive where the job left them empty.
+	must.Eq(t, "/oci/initrd.img", result.Payload.Initramfs)
+	must.SliceLen(t, 1, result.Disk)
+	must.Eq(t, "/oci/rootfs.qcow2", result.Disk[0].Path)
+	must.Eq(t, "Tty", result.Console.Mode)
+	must.SliceLen(t, 1, result.Network)
+	must.NotNil(t, result.CloudInit)
+
+	// base is not mutated.
+	must.Eq(t, "/oci/vmlinuz", base.Payload.Kernel)
+	must.Eq(t, "console=ttyS0", base.Payload.Cmdline)
+	must.Eq(t, "tty", base.Serial)
 }

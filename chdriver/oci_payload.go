@@ -28,64 +28,55 @@ import (
 	"github.com/kittengrid/nomad-cloud-hypervisor-driver/internal/oci"
 )
 
-type TaskConfigOverrides struct {
-	Payload   *TaskPayloadConfig   `json:"payload,omitempty"`
-	Disk      []TaskDiskConfig     `json:"disk,omitempty"`
-	Console   *TaskConsoleConfig   `json:"console,omitempty"`
-	Network   []TaskNetworkConfig  `json:"network,omitempty"`
-	CloudInit *CloudInit           `json:"cloud-init,omitempty"`
-	Serial    string               `json:"serial,omitempty"`
+type OCIMetadataConfig struct {
+	Payload   *TaskPayloadConfig  `json:"payload,omitempty"`
+	Disk      []TaskDiskConfig    `json:"disk,omitempty"`
+	Console   *TaskConsoleConfig  `json:"console,omitempty"`
+	Network   []TaskNetworkConfig `json:"network,omitempty"`
+	CloudInit *CloudInit          `json:"cloud-init,omitempty"`
+	Serial    string              `json:"serial,omitempty"`
 }
 
 type OCIMetadata struct {
-	Name    string               `json:"name"`
-	Version string               `json:"version"`
-	Arch    string               `json:"arch"`
-	Config  *TaskConfigOverrides `json:"config,omitempty"`
+	Name    string             `json:"name"`
+	Version string             `json:"version"`
+	Arch    string             `json:"arch"`
+	Config  *OCIMetadataConfig `json:"config,omitempty"`
 }
 
 func resolveOCIPayload(ctx context.Context, cfg *TaskConfig, cacheDir string, logger hclog.Logger) error {
-	logger.Info("Resolving OCI payload", "oci_image", cfg.OCIImage, "cache_dir", cacheDir)
 	if cfg == nil || cfg.OCIImage == "" {
 		return nil
 	}
+
+	logger.Info("Resolving OCI payload", "oci_image", cfg.OCIImage, "cache_dir", cacheDir)
 
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return fmt.Errorf("create cache dir: %w", err)
 	}
 
-	pullOptions := oci.PullOptions{
-		Reference: cfg.OCIImage,
-		CacheDir:  cacheDir,
-	}
-
-	artifact, err := oci.PullIntoCache(ctx, pullOptions, logger)
+	artifact, err := oci.PullIntoCache(ctx, oci.PullOptions{Reference: cfg.OCIImage, CacheDir: cacheDir}, logger)
 	if err != nil {
 		return fmt.Errorf("pull OCI payload: %w", err)
 	}
 
-	overrides, err := readOCIMetadataOverrides(filepath.Join(artifact.WorkDir, "metadata.json"), logger)
+	metadata, err := readOCIMetadata(filepath.Join(artifact.WorkDir, "metadata.json"), logger)
 	if err != nil {
 		return fmt.Errorf("read OCI metadata: %w", err)
 	}
-	logger.Info("OCI metadata read", "overrides_present", overrides != nil)
 
-	// Build the base config from the OCI image (metadata + filesystem defaults),
-	// then let the job's explicit settings win on top — mirroring how
-	// `docker run --entrypoint` overrides the image entrypoint.
-	ociBase := &TaskConfig{OCIImage: cfg.OCIImage}
-	if overrides != nil {
-		applyTaskConfigOverrides(ociBase, overrides, artifact.WorkDir, logger)
-	}
-	applyOCIPayloadDefaults(ociBase, artifact.WorkDir, logger)
-	applyJobConfig(ociBase, cfg, logger)
-	*cfg = *ociBase
+	// Build base from OCI image (metadata + filesystem defaults), then let the
+	// job's explicit settings win — mirroring how `docker run --entrypoint`
+	// overrides the image entrypoint.
+	ociBase := buildConfigFromOCIMetadata(metadata, artifact.WorkDir, logger)
+	ociBase.OCIImage = cfg.OCIImage
+	*cfg = applyJobConfig(ociBase, cfg, logger)
 	return nil
 }
 
-func readOCIMetadataOverrides(path string, logger hclog.Logger) (*TaskConfigOverrides, error) {
-	data, err := os.ReadFile(path)
+func readOCIMetadata(path string, logger hclog.Logger) (*OCIMetadataConfig, error) {
 	logger.Info("Reading OCI metadata", "path", path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("OCI metadata.json not found at %q: %w", path, err)
@@ -101,59 +92,74 @@ func readOCIMetadataOverrides(path string, logger hclog.Logger) (*TaskConfigOver
 	return metadata.Config, nil
 }
 
-func applyTaskConfigOverrides(cfg *TaskConfig, overrides *TaskConfigOverrides, baseDir string, logger hclog.Logger) {
-	if cfg == nil || overrides == nil {
-		return
-	}
+// buildConfigFromOCIMetadata builds a TaskConfig from OCI image metadata and
+// filesystem defaults (vmlinuz, initrd.img, rootfs.qcow2).
+func buildConfigFromOCIMetadata(metadata *OCIMetadataConfig, workDir string, logger hclog.Logger) TaskConfig {
+	cfg := TaskConfig{}
 
-	if overrides.Payload != nil {
-		if overrides.Payload.Kernel != "" {
-			cfg.Payload.Kernel = resolvePath(baseDir, overrides.Payload.Kernel)
-			logger.Info("OCI override applied", "field", "payload.kernel", "value", cfg.Payload.Kernel)
+	if metadata != nil {
+		if metadata.Payload != nil {
+			if metadata.Payload.Kernel != "" {
+				cfg.Payload.Kernel = resolvePath(workDir, metadata.Payload.Kernel)
+				logger.Info("OCI image config", "field", "payload.kernel", "value", cfg.Payload.Kernel)
+			}
+			if metadata.Payload.Initramfs != "" {
+				cfg.Payload.Initramfs = resolvePath(workDir, metadata.Payload.Initramfs)
+				logger.Info("OCI image config", "field", "payload.initramfs", "value", cfg.Payload.Initramfs)
+			}
+			if metadata.Payload.Cmdline != "" {
+				cfg.Payload.Cmdline = metadata.Payload.Cmdline
+				logger.Info("OCI image config", "field", "payload.cmdline", "value", cfg.Payload.Cmdline)
+			}
 		}
-		if overrides.Payload.Initramfs != "" {
-			cfg.Payload.Initramfs = resolvePath(baseDir, overrides.Payload.Initramfs)
-			logger.Info("OCI override applied", "field", "payload.initramfs", "value", cfg.Payload.Initramfs)
+		if len(metadata.Disk) > 0 {
+			cfg.Disk = make([]TaskDiskConfig, len(metadata.Disk))
+			copy(cfg.Disk, metadata.Disk)
+			for i := range cfg.Disk {
+				cfg.Disk[i].Path = resolvePath(workDir, cfg.Disk[i].Path)
+			}
+			logger.Info("OCI image config", "field", "disk", "entries", len(cfg.Disk))
 		}
-		if overrides.Payload.Cmdline != "" {
-			cfg.Payload.Cmdline = overrides.Payload.Cmdline
-			logger.Info("OCI override applied", "field", "payload.cmdline", "value", cfg.Payload.Cmdline)
+		if metadata.Console != nil && metadata.Console.Mode != "" {
+			cfg.Console.Mode = metadata.Console.Mode
+			logger.Info("OCI image config", "field", "console.mode", "value", cfg.Console.Mode)
+		}
+		if len(metadata.Network) > 0 {
+			cfg.Network = metadata.Network
+			logger.Info("OCI image config", "field", "network", "entries", len(cfg.Network))
+		}
+		if metadata.CloudInit != nil {
+			cfg.CloudInit = metadata.CloudInit
+			logger.Info("OCI image config", "field", "cloud-init")
+		}
+		if metadata.Serial != "" {
+			cfg.Serial = metadata.Serial
+			logger.Info("OCI image config", "field", "serial", "value", cfg.Serial)
 		}
 	}
 
-	if len(overrides.Disk) > 0 {
-		cfg.Disk = overrides.Disk
-		for i := range cfg.Disk {
-			cfg.Disk[i].Path = resolvePath(baseDir, cfg.Disk[i].Path)
-		}
-		logger.Info("OCI override applied", "field", "disk", "entries", len(cfg.Disk))
+	// Filesystem defaults: fill in well-known paths present in the OCI artifact.
+	if kernelPath := filepath.Join(workDir, "vmlinuz"); cfg.Payload.Kernel == "" && fileExists(kernelPath) {
+		cfg.Payload.Kernel = kernelPath
+		logger.Info("OCI payload kernel set", "path", kernelPath)
+	}
+	if initramfsPath := filepath.Join(workDir, "initrd.img"); cfg.Payload.Initramfs == "" && fileExists(initramfsPath) {
+		cfg.Payload.Initramfs = initramfsPath
+		logger.Info("OCI payload initramfs set", "path", initramfsPath)
+	}
+	if rootfsPath := filepath.Join(workDir, "rootfs.qcow2"); fileExists(rootfsPath) && !hasDiskPath(cfg.Disk) {
+		cfg.Disk = append(cfg.Disk, TaskDiskConfig{Path: rootfsPath, ImageType: "qcow2"})
+		logger.Info("OCI payload rootfs attached", "path", rootfsPath)
 	}
 
-	if overrides.Console != nil && overrides.Console.Mode != "" {
-		cfg.Console.Mode = overrides.Console.Mode
-		logger.Info("OCI override applied", "field", "console.mode", "value", cfg.Console.Mode)
-	}
-
-	if len(overrides.Network) > 0 {
-		cfg.Network = overrides.Network
-		logger.Info("OCI override applied", "field", "network", "entries", len(cfg.Network))
-	}
-
-	if overrides.CloudInit != nil {
-		cfg.CloudInit = overrides.CloudInit
-		logger.Info("OCI override applied", "field", "cloud-init")
-	}
-
-	if overrides.Serial != "" {
-		cfg.Serial = overrides.Serial
-		logger.Info("OCI override applied", "field", "serial", "value", cfg.Serial)
-	}
+	return cfg
 }
 
-// applyJobConfig merges non-zero fields from the job's task config onto base,
-// giving the job's explicit settings priority over whatever the OCI image
-// provides — analogous to overriding a Docker image entrypoint at run time.
-func applyJobConfig(base, job *TaskConfig, logger hclog.Logger) {
+// applyJobConfig returns a new TaskConfig with non-zero fields from job merged
+// on top of base, giving the job's explicit settings priority over whatever the
+// OCI image provides — analogous to overriding a Docker image entrypoint at
+// run time.
+func applyJobConfig(base TaskConfig, job *TaskConfig, logger hclog.Logger) TaskConfig {
 	if job.Payload.Kernel != "" {
 		base.Payload.Kernel = job.Payload.Kernel
 		logger.Info("job config override", "field", "payload.kernel", "value", job.Payload.Kernel)
@@ -186,33 +192,7 @@ func applyJobConfig(base, job *TaskConfig, logger hclog.Logger) {
 		base.Serial = job.Serial
 		logger.Info("job config override", "field", "serial", "value", job.Serial)
 	}
-}
-
-func applyOCIPayloadDefaults(cfg *TaskConfig, workDir string, logger hclog.Logger) {
-	if cfg == nil {
-		return
-	}
-
-	kernelPath := filepath.Join(workDir, "vmlinuz")
-	if cfg.Payload.Kernel == "" && fileExists(kernelPath) {
-		cfg.Payload.Kernel = kernelPath
-		logger.Info("OCI payload kernel set", "path", kernelPath)
-	}
-
-	initramfsPath := filepath.Join(workDir, "initrd.img")
-	if cfg.Payload.Initramfs == "" && fileExists(initramfsPath) {
-		cfg.Payload.Initramfs = initramfsPath
-		logger.Info("OCI payload initramfs set", "path", initramfsPath)
-	}
-
-	rootfsPath := filepath.Join(workDir, "rootfs.qcow2")
-	if fileExists(rootfsPath) && !hasDiskPath(cfg.Disk) {
-		cfg.Disk = append(cfg.Disk, TaskDiskConfig{
-			Path:      rootfsPath,
-			ImageType: "qcow2",
-		})
-		logger.Info("OCI payload rootfs attached", "path", rootfsPath)
-	}
+	return base
 }
 
 func hasDiskPath(disks []TaskDiskConfig) bool {
