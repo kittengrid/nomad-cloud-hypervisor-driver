@@ -24,7 +24,6 @@ import (
 	"github.com/hashicorp/nomad/plugins/shared/hclspec"
 	"github.com/hashicorp/nomad/plugins/shared/structs"
 	"github.com/kittengrid/nomad-cloud-hypervisor-driver/internal/cloudinit"
-	"github.com/kittengrid/nomad-cloud-hypervisor-driver/internal/oci"
 )
 
 const (
@@ -105,7 +104,6 @@ var (
 			"image_type":        hclspec.NewAttr("image_type", "string", false),
 			"readonly":          hclspec.NewAttr("readonly", "bool", false),
 			"ephemeral_overlay": hclspec.NewAttr("ephemeral_overlay", "bool", false),
-			"oci_image":         hclspec.NewAttr("oci_image", "string", false),
 		})),
 		"console": hclspec.NewBlock("console", false, hclspec.NewObject(map[string]*hclspec.Spec{
 			"mode": hclspec.NewAttr("mode", "string", false),
@@ -164,7 +162,6 @@ type TaskDiskConfig struct {
 	ImageType        string `codec:"image_type"        json:"image_type,omitempty"`
 	Readonly         bool   `codec:"readonly"          json:"readonly"`
 	EphemeralOverlay bool   `codec:"ephemeral_overlay" json:"ephemeral_overlay"`
-	OCIImage         string `codec:"oci_image"         json:"oci_image,omitempty"`
 }
 
 // TaskConsoleConfig corresponds to ConsoleConfig in chtypes (required fields only).
@@ -439,25 +436,12 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 		}
 	}
 
+	if err := materializeOCIPayload(d.ctx, &driverConfig, d.config.CacheDir, d.logger); err != nil {
+		return nil, nil, fmt.Errorf("materialize OCI payload: %v", err)
+	}
+
 	// Now the disks, in case any of them are ephemeral overlays that need to be generated before starting
 	for i, disk := range driverConfig.Disk {
-		if disk.OCIImage != "" {
-			// If the disk is specified as an OCI image, we need to pull it and convert it to a qcow2 image before starting the VM.
-			pullOptions := oci.PullOptions{
-				Reference: disk.OCIImage,
-				CacheDir:  d.config.CacheDir,
-			}
-
-			ociImagePath, err := oci.PullIntoCache(context.Background(), pullOptions, d.logger)
-			if err != nil {
-				return nil, nil, fmt.Errorf("failed to pull OCI image: %v", err)
-			}
-
-			// Update the disk path to point to the pulled image, which is what startCloudHypervisor will use.
-			driverConfig.Disk[i].Path = ociImagePath.WorkDir + "/rootfs.qcow2"
-			driverConfig.Disk[i].ImageType = "qcow2"
-		}
-
 		if disk.EphemeralOverlay {
 			overlayPath := filepath.Join(cfg.TaskDir().LocalDir, fmt.Sprintf("overlay-%d.img", i))
 			if err := NewOverlayDiskFromDiskConfig(disk, overlayPath).Create(); err != nil {

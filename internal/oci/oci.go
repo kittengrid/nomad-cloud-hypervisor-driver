@@ -31,21 +31,9 @@ type PulledArtifact struct {
 // PullIntoCache resolves, fetches, and materializes an OCI artifact into a
 // deterministic cache directory based on the manifest digest.
 func PullIntoCache(ctx context.Context, opts PullOptions, logger hclog.Logger) (*PulledArtifact, error) {
-	repo, err := remote.NewRepository(opts.Reference)
+	repo, err := openRepository(opts.Reference)
 	if err != nil {
-		return nil, fmt.Errorf("create repository: %w", err)
-	}
-	repo.PlainHTTP = isLocalRegistry(repo.Reference.Registry)
-
-	store, err := credentials.NewStoreFromDocker(credentials.StoreOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("new credentials store: %w", err)
-	}
-
-	repo.Client = &auth.Client{
-		Client:     retry.DefaultClient,
-		Cache:      auth.NewCache(),
-		Credential: credentials.Credential(store),
+		return nil, err
 	}
 
 	// Resolve the tag/digest first so we get the immutable manifest descriptor.
@@ -66,28 +54,40 @@ func PullIntoCache(ctx context.Context, opts PullOptions, logger hclog.Logger) (
 	return &PulledArtifact{WorkDir: workDir}, nil
 }
 
-// MaterializeImage fetches the manifest/config/layers and writes them to
-// workDir using the driver-expected filenames.
-func MaterializeImage(ctx context.Context, repo *remote.Repository, ref, workDir string) error {
-	manifestDesc, err := repo.Resolve(ctx, ref)
+// FetchMetadata returns the raw OCI config blob, which the driver stores as metadata.json.
+func FetchMetadata(ctx context.Context, reference string) ([]byte, error) {
+	repo, err := openRepository(reference)
 	if err != nil {
-		return fmt.Errorf("resolve manifest %q: %w", ref, err)
+		return nil, err
 	}
 
-	rc, err := repo.Fetch(ctx, manifestDesc)
+	manifest, err := fetchManifest(ctx, repo, repo.Reference.Reference)
 	if err != nil {
-		return fmt.Errorf("fetch manifest %s: %w", manifestDesc.Digest, err)
+		return nil, err
+	}
+	if manifest.Config.Digest == "" {
+		return nil, fmt.Errorf("manifest for %q has no config blob", reference)
+	}
+
+	rc, err := repo.Fetch(ctx, manifest.Config)
+	if err != nil {
+		return nil, fmt.Errorf("fetch config blob %s: %w", manifest.Config.Digest, err)
 	}
 	defer rc.Close()
 
-	manifestBytes, err := content.ReadAll(rc, manifestDesc)
+	configBytes, err := content.ReadAll(rc, manifest.Config)
 	if err != nil {
-		return fmt.Errorf("read manifest %s: %w", manifestDesc.Digest, err)
+		return nil, fmt.Errorf("read config blob %s: %w", manifest.Config.Digest, err)
 	}
+	return configBytes, nil
+}
 
-	var manifest ocispec.Manifest
-	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
-		return fmt.Errorf("decode manifest: %w", err)
+// MaterializeImage fetches the manifest/config/layers and writes them to
+// workDir using the driver-expected filenames.
+func MaterializeImage(ctx context.Context, repo *remote.Repository, ref, workDir string) error {
+	manifest, err := fetchManifest(ctx, repo, ref)
+	if err != nil {
+		return err
 	}
 
 	if manifest.Config.Digest != "" {
@@ -127,6 +127,50 @@ func MaterializeImage(ctx context.Context, repo *remote.Repository, ref, workDir
 	}
 
 	return nil
+}
+
+func openRepository(reference string) (*remote.Repository, error) {
+	repo, err := remote.NewRepository(reference)
+	if err != nil {
+		return nil, fmt.Errorf("create repository: %w", err)
+	}
+	repo.PlainHTTP = isLocalRegistry(repo.Reference.Registry)
+
+	store, err := credentials.NewStoreFromDocker(credentials.StoreOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("new credentials store: %w", err)
+	}
+
+	repo.Client = &auth.Client{
+		Client:     retry.DefaultClient,
+		Cache:      auth.NewCache(),
+		Credential: credentials.Credential(store),
+	}
+	return repo, nil
+}
+
+func fetchManifest(ctx context.Context, repo *remote.Repository, ref string) (*ocispec.Manifest, error) {
+	manifestDesc, err := repo.Resolve(ctx, ref)
+	if err != nil {
+		return nil, fmt.Errorf("resolve manifest %q: %w", ref, err)
+	}
+
+	rc, err := repo.Fetch(ctx, manifestDesc)
+	if err != nil {
+		return nil, fmt.Errorf("fetch manifest %s: %w", manifestDesc.Digest, err)
+	}
+	defer rc.Close()
+
+	manifestBytes, err := content.ReadAll(rc, manifestDesc)
+	if err != nil {
+		return nil, fmt.Errorf("read manifest %s: %w", manifestDesc.Digest, err)
+	}
+
+	var manifest ocispec.Manifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		return nil, fmt.Errorf("decode manifest: %w", err)
+	}
+	return &manifest, nil
 }
 
 func isLocalRegistry(host string) bool {

@@ -49,22 +49,22 @@ func resolveOCIPayload(ctx context.Context, cfg *TaskConfig, cacheDir string, lo
 		return nil
 	}
 
-	logger.Info("Resolving OCI payload", "oci_image", cfg.OCIImage, "cache_dir", cacheDir)
+	logger.Info("Resolving OCI payload metadata", "oci_image", cfg.OCIImage)
 
-	artifact, err := oci.PullIntoCache(ctx, oci.PullOptions{Reference: cfg.OCIImage, CacheDir: cacheDir}, logger)
+	metadataBytes, err := oci.FetchMetadata(ctx, cfg.OCIImage)
 	if err != nil {
-		return fmt.Errorf("pull OCI payload: %w", err)
+		return fmt.Errorf("fetch OCI payload metadata: %w", err)
 	}
 
-	metadata, err := readOCIMetadata(filepath.Join(artifact.WorkDir, "metadata.json"), logger)
+	metadata, err := parseOCIMetadata(metadataBytes, logger)
 	if err != nil {
 		return fmt.Errorf("read OCI metadata: %w", err)
 	}
 
-	// Build base from OCI image (metadata + filesystem defaults), then let the
-	// job's explicit settings win — mirroring how `docker run --entrypoint`
-	// overrides the image entrypoint.
-	ociBase := buildConfigFromOCIMetadata(metadata, artifact.WorkDir, logger)
+	// Build base from OCI metadata only, then let the job's explicit settings
+	// win — mirroring how `docker run --entrypoint` overrides the image
+	// entrypoint. The actual artifact is materialized later in StartTask.
+	ociBase := buildConfigFromOCIMetadata(metadata, logger)
 	ociBase.OCIImage = cfg.OCIImage
 	*cfg = applyJobConfig(ociBase, cfg, logger)
 	return nil
@@ -79,6 +79,10 @@ func readOCIMetadata(path string, logger hclog.Logger) (*OCIMetadataConfig, erro
 		}
 		return nil, err
 	}
+	return parseOCIMetadata(data, logger)
+}
+
+func parseOCIMetadata(data []byte, logger hclog.Logger) (*OCIMetadataConfig, error) {
 	logger.Debug("OCI metadata content", "content", string(data))
 
 	var metadata OCIMetadata
@@ -88,19 +92,20 @@ func readOCIMetadata(path string, logger hclog.Logger) (*OCIMetadataConfig, erro
 	return metadata.Config, nil
 }
 
-// buildConfigFromOCIMetadata builds a TaskConfig from OCI image metadata and
-// filesystem defaults (vmlinuz, initrd.img, rootfs.qcow2).
-func buildConfigFromOCIMetadata(metadata *OCIMetadataConfig, workDir string, logger hclog.Logger) TaskConfig {
+// buildConfigFromOCIMetadata builds a TaskConfig from OCI image metadata only.
+// Relative paths and filesystem defaults are applied later, once the artifact
+// has been materialized locally.
+func buildConfigFromOCIMetadata(metadata *OCIMetadataConfig, logger hclog.Logger) TaskConfig {
 	cfg := TaskConfig{}
 
 	if metadata != nil {
 		if metadata.Payload != nil {
 			if metadata.Payload.Kernel != "" {
-				cfg.Payload.Kernel = resolvePath(workDir, metadata.Payload.Kernel)
+				cfg.Payload.Kernel = metadata.Payload.Kernel
 				logger.Info("OCI image config", "field", "payload.kernel", "value", cfg.Payload.Kernel)
 			}
 			if metadata.Payload.Initramfs != "" {
-				cfg.Payload.Initramfs = resolvePath(workDir, metadata.Payload.Initramfs)
+				cfg.Payload.Initramfs = metadata.Payload.Initramfs
 				logger.Info("OCI image config", "field", "payload.initramfs", "value", cfg.Payload.Initramfs)
 			}
 			if metadata.Payload.Cmdline != "" {
@@ -111,9 +116,6 @@ func buildConfigFromOCIMetadata(metadata *OCIMetadataConfig, workDir string, log
 		if len(metadata.Disk) > 0 {
 			cfg.Disk = make([]TaskDiskConfig, len(metadata.Disk))
 			copy(cfg.Disk, metadata.Disk)
-			for i := range cfg.Disk {
-				cfg.Disk[i].Path = resolvePath(workDir, cfg.Disk[i].Path)
-			}
 			logger.Info("OCI image config", "field", "disk", "entries", len(cfg.Disk))
 		}
 		if metadata.Console != nil && metadata.Console.Mode != "" {
@@ -134,7 +136,26 @@ func buildConfigFromOCIMetadata(metadata *OCIMetadataConfig, workDir string, log
 		}
 	}
 
-	// Filesystem defaults: fill in well-known paths present in the OCI artifact.
+	return cfg
+}
+
+// applyOCIArtifact applies workdir-relative path resolution and filesystem defaults
+// after the OCI artifact has been materialized locally.
+func applyOCIArtifact(cfg *TaskConfig, workDir string, logger hclog.Logger) {
+	if cfg == nil {
+		return
+	}
+
+	if cfg.Payload.Kernel != "" {
+		cfg.Payload.Kernel = resolvePath(workDir, cfg.Payload.Kernel)
+	}
+	if cfg.Payload.Initramfs != "" {
+		cfg.Payload.Initramfs = resolvePath(workDir, cfg.Payload.Initramfs)
+	}
+	for i := range cfg.Disk {
+		cfg.Disk[i].Path = resolvePath(workDir, cfg.Disk[i].Path)
+	}
+
 	if kernelPath := filepath.Join(workDir, "vmlinuz"); cfg.Payload.Kernel == "" && fileExists(kernelPath) {
 		cfg.Payload.Kernel = kernelPath
 		logger.Info("OCI payload kernel set", "path", kernelPath)
@@ -147,14 +168,27 @@ func buildConfigFromOCIMetadata(metadata *OCIMetadataConfig, workDir string, log
 		cfg.Disk = append(cfg.Disk, TaskDiskConfig{Path: rootfsPath, ImageType: "qcow2"})
 		logger.Info("OCI payload rootfs attached", "path", rootfsPath)
 	}
-
-	return cfg
 }
 
 // applyJobConfig returns a new TaskConfig with non-zero fields from job merged
 // on top of base, giving the job's explicit settings priority over whatever the
 // OCI image provides — analogous to overriding a Docker image entrypoint at
 // run time.
+func materializeOCIPayload(ctx context.Context, cfg *TaskConfig, cacheDir string, logger hclog.Logger) error {
+	if cfg == nil || cfg.OCIImage == "" {
+		return nil
+	}
+
+	logger.Info("Materializing OCI payload", "oci_image", cfg.OCIImage, "cache_dir", cacheDir)
+	artifact, err := oci.PullIntoCache(ctx, oci.PullOptions{Reference: cfg.OCIImage, CacheDir: cacheDir}, logger)
+	if err != nil {
+		return fmt.Errorf("pull OCI payload: %w", err)
+	}
+
+	applyOCIArtifact(cfg, artifact.WorkDir, logger)
+	return nil
+}
+
 func applyJobConfig(base TaskConfig, job *TaskConfig, logger hclog.Logger) TaskConfig {
 	if job.Payload.Kernel != "" {
 		base.Payload.Kernel = job.Payload.Kernel

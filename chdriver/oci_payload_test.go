@@ -55,13 +55,7 @@ func TestReadOCIMetadata(t *testing.T) {
 	must.NotNil(t, overrides.CloudInit)
 }
 
-func TestApplyOCIImageConfig(t *testing.T) {
-	dir := t.TempDir()
-
-	// Write filesystem defaults so they get picked up.
-	must.NoError(t, os.WriteFile(filepath.Join(dir, "initrd.img"), []byte("initramfs"), 0o644))
-	must.NoError(t, os.WriteFile(filepath.Join(dir, "rootfs.qcow2"), []byte("rootfs"), 0o644))
-
+func TestBuildConfigFromOCIMetadata(t *testing.T) {
 	metadata := &OCIMetadataConfig{
 		Payload: &TaskPayloadConfig{
 			Kernel:  "vmlinuz",
@@ -76,13 +70,12 @@ func TestApplyOCIImageConfig(t *testing.T) {
 		Serial:    "socket=/tmp/serial",
 	}
 
-	cfg := buildConfigFromOCIMetadata(metadata, dir, hclog.NewNullLogger())
+	cfg := buildConfigFromOCIMetadata(metadata, hclog.NewNullLogger())
 
-	// Metadata fields are applied and relative paths resolved.
-	must.Eq(t, filepath.Join(dir, "vmlinuz"), cfg.Payload.Kernel)
+	must.Eq(t, "vmlinuz", cfg.Payload.Kernel)
 	must.Eq(t, "console=ttyS0", cfg.Payload.Cmdline)
 	must.SliceLen(t, 1, cfg.Disk)
-	must.Eq(t, filepath.Join(dir, "rootfs.raw"), cfg.Disk[0].Path)
+	must.Eq(t, "rootfs.raw", cfg.Disk[0].Path)
 	must.Eq(t, "raw", cfg.Disk[0].ImageType)
 	must.True(t, cfg.Disk[0].Readonly)
 	must.Eq(t, "Tty", cfg.Console.Mode)
@@ -93,21 +86,36 @@ func TestApplyOCIImageConfig(t *testing.T) {
 	must.NotNil(t, cfg.CloudInit)
 	must.Eq(t, "#cloud-config\n", cfg.CloudInit.UserData)
 	must.Eq(t, "socket=/tmp/serial", cfg.Serial)
-
-	// Initramfs was not in metadata so the filesystem default is used.
-	must.Eq(t, filepath.Join(dir, "initrd.img"), cfg.Payload.Initramfs)
-
-	// Disk was specified in metadata so the rootfs.qcow2 default is NOT added.
-	must.SliceLen(t, 1, cfg.Disk)
+	must.Eq(t, "", cfg.Payload.Initramfs)
 }
 
-func TestApplyOCIImageConfig_NoMetadata(t *testing.T) {
+func TestApplyOCIArtifact(t *testing.T) {
 	dir := t.TempDir()
 	must.NoError(t, os.WriteFile(filepath.Join(dir, "vmlinuz"), []byte("kernel"), 0o644))
 	must.NoError(t, os.WriteFile(filepath.Join(dir, "initrd.img"), []byte("initramfs"), 0o644))
 	must.NoError(t, os.WriteFile(filepath.Join(dir, "rootfs.qcow2"), []byte("rootfs"), 0o644))
 
-	cfg := buildConfigFromOCIMetadata(nil, dir, hclog.NewNullLogger())
+	cfg := TaskConfig{
+		Payload: TaskPayloadConfig{Kernel: "vmlinuz"},
+		Disk:    []TaskDiskConfig{{Path: "rootfs.raw", ImageType: "raw", Readonly: true}},
+	}
+	applyOCIArtifact(&cfg, dir, hclog.NewNullLogger())
+
+	must.Eq(t, filepath.Join(dir, "vmlinuz"), cfg.Payload.Kernel)
+	must.Eq(t, filepath.Join(dir, "initrd.img"), cfg.Payload.Initramfs)
+	must.SliceLen(t, 1, cfg.Disk)
+	must.Eq(t, filepath.Join(dir, "rootfs.raw"), cfg.Disk[0].Path)
+	must.Eq(t, "raw", cfg.Disk[0].ImageType)
+}
+
+func TestApplyOCIArtifact_NoMetadata(t *testing.T) {
+	dir := t.TempDir()
+	must.NoError(t, os.WriteFile(filepath.Join(dir, "vmlinuz"), []byte("kernel"), 0o644))
+	must.NoError(t, os.WriteFile(filepath.Join(dir, "initrd.img"), []byte("initramfs"), 0o644))
+	must.NoError(t, os.WriteFile(filepath.Join(dir, "rootfs.qcow2"), []byte("rootfs"), 0o644))
+
+	cfg := TaskConfig{}
+	applyOCIArtifact(&cfg, dir, hclog.NewNullLogger())
 
 	must.Eq(t, filepath.Join(dir, "vmlinuz"), cfg.Payload.Kernel)
 	must.Eq(t, filepath.Join(dir, "initrd.img"), cfg.Payload.Initramfs)
