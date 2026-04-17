@@ -86,6 +86,9 @@ var (
 			hclspec.NewAttr("cache-dir", "string", false),
 			hclspec.NewLiteral(`"/run/nomad-ch-driver"`),
 		),
+		"auth": hclspec.NewBlock("auth", false, hclspec.NewObject(map[string]*hclspec.Spec{
+			"config": hclspec.NewAttr("config", "string", false),
+		})),
 	})
 
 	// taskConfigSpec is the specification of the plugin's configuration for
@@ -137,6 +140,11 @@ var (
 	}
 )
 
+// AuthConfig holds optional OCI registry authentication settings.
+type AuthConfig struct {
+	Config string `codec:"config"`
+}
+
 // Config contains configuration information for the plugin
 type Config struct {
 	// TODO: create decoded plugin configuration struct
@@ -144,9 +152,10 @@ type Config struct {
 	// This struct is the decoded version of the schema defined in the
 	// configSpec variable above. It's used to convert the HCL configuration
 	// passed by the Nomad agent into Go contructs.
-	CloudHypervisorBinaryPath string `codec:"cloud-hypervisor-binary-path"`
-	CloudHypervisorSocketDir  string `codec:"cloud-hypervisor-socket-dir"`
-	CacheDir                  string `codec:"cache-dir"`
+	CloudHypervisorBinaryPath string      `codec:"cloud-hypervisor-binary-path"`
+	CloudHypervisorSocketDir  string      `codec:"cloud-hypervisor-socket-dir"`
+	CacheDir                  string      `codec:"cache-dir"`
+	Auth                      *AuthConfig `codec:"auth"`
 }
 
 // TaskPayloadConfig corresponds to PayloadConfig in chtypes.
@@ -261,6 +270,15 @@ func (d *CloudHypervisorDriverPlugin) ConfigSchema() (*hclspec.Spec, error) {
 }
 
 // SetConfig is called by the client to pass the configuration for the plugin.
+// dockerConfigPath returns the Docker auth config file path from the driver
+// config, or empty string if none was set (which makes oci use the default).
+func (d *CloudHypervisorDriverPlugin) dockerConfigPath() string {
+	if d.config != nil && d.config.Auth != nil {
+		return d.config.Auth.Config
+	}
+	return ""
+}
+
 func (d *CloudHypervisorDriverPlugin) SetConfig(cfg *base.Config) error {
 	var config Config
 	if len(cfg.PluginConfig) != 0 {
@@ -387,7 +405,7 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 		return nil, nil, fmt.Errorf("failed to decode driver config: %v", err)
 	}
 
-	if err := resolveOCIPayload(d.ctx, &driverConfig, d.config.CacheDir, d.logger); err != nil {
+	if err := resolveOCIPayload(d.ctx, &driverConfig, d.config.CacheDir, d.dockerConfigPath(), d.logger); err != nil {
 		return nil, nil, fmt.Errorf("resolve OCI payload: %v", err)
 	}
 
@@ -446,7 +464,7 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 		})
 	}
 
-	if err := materializeOCIPayload(d.ctx, &driverConfig, d.config.CacheDir, d.logger, progress); err != nil {
+	if err := materializeOCIPayload(d.ctx, &driverConfig, d.config.CacheDir, d.dockerConfigPath(), d.logger, progress); err != nil {
 		return nil, nil, fmt.Errorf("materialize OCI payload: %v", err)
 	}
 

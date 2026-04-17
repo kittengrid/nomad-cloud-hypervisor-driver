@@ -25,8 +25,9 @@ type ProgressFunc func(msg string)
 
 // PullOptions describes how to pull an OCI artifact into a local cache.
 type PullOptions struct {
-	Reference string // e.g. ghcr.io/myorg/vm-images/ubuntu22.04:2026-04-02
-	CacheDir  string // absolute base cache dir
+	Reference        string // e.g. ghcr.io/myorg/vm-images/ubuntu22.04:2026-04-02
+	CacheDir         string // absolute base cache dir
+	DockerConfigPath string // optional path to a Docker auth config file; empty means default
 }
 
 // PulledArtifact describes the location of a materialized OCI artifact.
@@ -44,7 +45,7 @@ type PulledArtifact struct {
 // the first caller downloads; subsequent callers see the .complete marker and
 // return immediately.
 func PullIntoCache(ctx context.Context, opts PullOptions, logger hclog.Logger, progress ProgressFunc) (*PulledArtifact, error) {
-	repo, err := openRepository(opts.Reference)
+	repo, err := openRepository(opts.Reference, opts.DockerConfigPath)
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +89,7 @@ func PullIntoCache(ctx context.Context, opts PullOptions, logger hclog.Logger, p
 		return nil, fmt.Errorf("materialize OCI image: %w", err)
 	}
 
+
 	// Write the sentinel only after a fully successful download so that an
 	// interrupted pull is retried on the next call.
 	if err := os.WriteFile(filepath.Join(workDir, ".complete"), []byte{}, 0o644); err != nil {
@@ -98,8 +100,9 @@ func PullIntoCache(ctx context.Context, opts PullOptions, logger hclog.Logger, p
 }
 
 // FetchMetadata returns the raw OCI config blob, which the driver stores as metadata.json.
-func FetchMetadata(ctx context.Context, reference string) ([]byte, error) {
-	repo, err := openRepository(reference)
+// dockerConfigPath, if non-empty, overrides the default Docker credential store.
+func FetchMetadata(ctx context.Context, reference, dockerConfigPath string) ([]byte, error) {
+	repo, err := openRepository(reference, dockerConfigPath)
 	if err != nil {
 		return nil, err
 	}
@@ -216,16 +219,24 @@ func (p *pctReader) Read(b []byte) (int, error) {
 	return n, err
 }
 
-func openRepository(reference string) (*remote.Repository, error) {
+func openRepository(reference, dockerConfigPath string) (*remote.Repository, error) {
 	repo, err := remote.NewRepository(reference)
 	if err != nil {
 		return nil, fmt.Errorf("create repository: %w", err)
 	}
 	repo.PlainHTTP = isLocalRegistry(repo.Reference.Registry)
 
-	store, err := credentials.NewStoreFromDocker(credentials.StoreOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("new credentials store: %w", err)
+	var store credentials.Store
+	if dockerConfigPath != "" {
+		store, err = credentials.NewStore(dockerConfigPath, credentials.StoreOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("new credentials store from %q: %w", dockerConfigPath, err)
+		}
+	} else {
+		store, err = credentials.NewStoreFromDocker(credentials.StoreOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("new credentials store: %w", err)
+		}
 	}
 
 	repo.Client = &auth.Client{
