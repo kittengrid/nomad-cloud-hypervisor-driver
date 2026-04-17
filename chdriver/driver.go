@@ -288,6 +288,10 @@ func (d *CloudHypervisorDriverPlugin) SetConfig(cfg *base.Config) error {
 		return fmt.Errorf("binary %s is not executable", binary)
 	}
 
+	if err := os.MkdirAll(d.config.CacheDir, 0o755); err != nil {
+		return fmt.Errorf("create cache dir %s: %w", d.config.CacheDir, err)
+	}
+
 	return nil
 }
 
@@ -438,10 +442,6 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 	// Now the disks, in case any of them are ephemeral overlays that need to be generated before starting
 	for i, disk := range driverConfig.Disk {
 		if disk.OCIImage != "" {
-			if err := os.MkdirAll(d.config.CacheDir, 0o755); err != nil {
-				return nil, nil, fmt.Errorf("create socket dir: %w", err)
-			}
-
 			// If the disk is specified as an OCI image, we need to pull it and convert it to a qcow2 image before starting the VM.
 			pullOptions := oci.PullOptions{
 				Reference: disk.OCIImage,

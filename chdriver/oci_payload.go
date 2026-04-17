@@ -51,10 +51,6 @@ func resolveOCIPayload(ctx context.Context, cfg *TaskConfig, cacheDir string, lo
 
 	logger.Info("Resolving OCI payload", "oci_image", cfg.OCIImage, "cache_dir", cacheDir)
 
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return fmt.Errorf("create cache dir: %w", err)
-	}
-
 	artifact, err := oci.PullIntoCache(ctx, oci.PullOptions{Reference: cfg.OCIImage, CacheDir: cacheDir}, logger)
 	if err != nil {
 		return fmt.Errorf("pull OCI payload: %w", err)
