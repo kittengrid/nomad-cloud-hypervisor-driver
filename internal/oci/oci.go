@@ -10,9 +10,7 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-	oras "oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
-	"oras.land/oras-go/v2/content/file"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
 	"oras.land/oras-go/v2/registry/remote/credentials"
@@ -61,21 +59,11 @@ func PullIntoCache(ctx context.Context, opts PullOptions, logger hclog.Logger) (
 		return nil, fmt.Errorf("mkdir cache dir: %w", err)
 	}
 
-	if err := MaterializeImageWithFallback(ctx, repo, repo.Reference.Reference, workDir); err != nil {
+	if err := MaterializeImage(ctx, repo, repo.Reference.Reference, workDir); err != nil {
 		return nil, fmt.Errorf("materialize OCI image: %w", err)
 	}
 
 	return &PulledArtifact{WorkDir: workDir}, nil
-}
-
-// MaterializeImageWithFallback materializes an OCI image into workDir using
-// the preferred descriptor-based approach, falling back to oras.Copy for
-// older layouts.
-func MaterializeImageWithFallback(ctx context.Context, repo *remote.Repository, ref, workDir string) error {
-	if err := MaterializeImage(ctx, repo, ref, workDir); err == nil {
-		return nil
-	}
-	return fileStoreCopyFallback(ctx, repo, ref, workDir)
 }
 
 // MaterializeImage fetches the manifest/config/layers and writes them to
@@ -139,19 +127,6 @@ func MaterializeImage(ctx context.Context, repo *remote.Repository, ref, workDir
 	}
 
 	return nil
-}
-
-// fileStoreCopyFallback is kept for compatibility with any older layouts that
-// are copied verbatim by oras.
-func fileStoreCopyFallback(ctx context.Context, repo *remote.Repository, ref, workDir string) error {
-	fs, err := file.New(workDir)
-	if err != nil {
-		return err
-	}
-	defer fs.Close()
-
-	_, err = oras.Copy(ctx, repo, ref, fs, "", oras.DefaultCopyOptions)
-	return err
 }
 
 func isLocalRegistry(host string) bool {
