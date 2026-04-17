@@ -6,8 +6,6 @@
 package e2e
 
 import (
-	"context"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +20,7 @@ func TestOCIHelloFromVM(t *testing.T) {
 	ctx, nomad := setup(t)
 	defer purge(t, ctx, "ch-oci")()
 
-	registry := StartTempRegistry(t)
+	registry := testoci.StartTempRegistry(t)
 	imageRef := testoci.PushOCIImageToRegistry(t, registry, "kittengrid/hello-vm", "latest", testoci.OCIImageOptions{
 		InitContents: `#!/bin/sh
 set -eux
@@ -66,12 +64,4 @@ poweroff -f
 		return strings.Contains(s, "hello from the VM")
 	})
 	must.StrContains(t, logs, "hello from the VM")
-}
-
-func submit(t *testing.T, ctx context.Context, command string, args ...string) {
-	t.Helper()
-	cmd := exec.CommandContext(ctx, command, args...)
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start %s: %v", command, err)
-	}
 }

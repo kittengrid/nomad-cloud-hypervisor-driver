@@ -19,4 +19,4 @@ test:
 .PHONY: e2e
 e2e: build
 	@echo "==> Run e2e tests"
-	cd e2e && GOFLAGS='--tags=e2e' go test -v .
+	go test -v -tags=e2e ./internal/oci ./e2e
