@@ -40,8 +40,7 @@ func TestReadOCIMetadata(t *testing.T) {
     ],
     "cloud-init": {"user-data": "#cloud-config\n"},
     "serial": "socket=/tmp/serial"
-  }
-}`
+  }}`
 
 	must.NoError(t, os.WriteFile(metadataPath, []byte(metadata), 0o644))
 
@@ -56,6 +55,7 @@ func TestReadOCIMetadata(t *testing.T) {
 }
 
 func TestBuildConfigFromOCIMetadata(t *testing.T) {
+	dir := t.TempDir()
 	metadata := &OCIMetadataConfig{
 		Payload: &TaskPayloadConfig{
 			Kernel:  "vmlinuz",
@@ -63,6 +63,7 @@ func TestBuildConfigFromOCIMetadata(t *testing.T) {
 		},
 		Disk: []TaskDiskConfig{
 			{Path: "rootfs.raw", ImageType: "raw", Readonly: true},
+			{Path: "data.raw", ImageType: "raw"},
 		},
 		Console:   &TaskConsoleConfig{Mode: "Tty"},
 		Network:   []TaskNetworkConfig{{Mac: "52:54:00:aa:bb:cc", AutoTuntap: true, AutoTuntapBridge: "br0"}},
@@ -70,14 +71,17 @@ func TestBuildConfigFromOCIMetadata(t *testing.T) {
 		Serial:    "socket=/tmp/serial",
 	}
 
-	cfg := buildConfigFromOCIMetadata(metadata, hclog.NewNullLogger())
+	cfg := buildConfigFromOCIMetadata(metadata, dir, hclog.NewNullLogger())
 
-	must.Eq(t, "vmlinuz", cfg.Payload.Kernel)
+	// Paths are resolved relative to workDir.
+	must.Eq(t, filepath.Join(dir, "vmlinuz"), cfg.Payload.Kernel)
+	must.Eq(t, "", cfg.Payload.Initramfs) // not in metadata
 	must.Eq(t, "console=ttyS0", cfg.Payload.Cmdline)
-	must.SliceLen(t, 1, cfg.Disk)
-	must.Eq(t, "rootfs.raw", cfg.Disk[0].Path)
+	must.SliceLen(t, 2, cfg.Disk)
+	must.Eq(t, filepath.Join(dir, "rootfs.raw"), cfg.Disk[0].Path)
 	must.Eq(t, "raw", cfg.Disk[0].ImageType)
 	must.True(t, cfg.Disk[0].Readonly)
+	must.Eq(t, filepath.Join(dir, "data.raw"), cfg.Disk[1].Path)
 	must.Eq(t, "Tty", cfg.Console.Mode)
 	must.SliceLen(t, 1, cfg.Network)
 	must.Eq(t, "52:54:00:aa:bb:cc", cfg.Network[0].Mac)
@@ -86,42 +90,32 @@ func TestBuildConfigFromOCIMetadata(t *testing.T) {
 	must.NotNil(t, cfg.CloudInit)
 	must.Eq(t, "#cloud-config\n", cfg.CloudInit.UserData)
 	must.Eq(t, "socket=/tmp/serial", cfg.Serial)
-	must.Eq(t, "", cfg.Payload.Initramfs)
 }
 
-func TestApplyOCIArtifact(t *testing.T) {
-	dir := t.TempDir()
-	must.NoError(t, os.WriteFile(filepath.Join(dir, "vmlinuz"), []byte("kernel"), 0o644))
-	must.NoError(t, os.WriteFile(filepath.Join(dir, "initrd.img"), []byte("initramfs"), 0o644))
-	must.NoError(t, os.WriteFile(filepath.Join(dir, "rootfs.qcow2"), []byte("rootfs"), 0o644))
-
-	cfg := TaskConfig{
-		Payload: TaskPayloadConfig{Kernel: "vmlinuz"},
-		Disk:    []TaskDiskConfig{{Path: "rootfs.raw", ImageType: "raw", Readonly: true}},
+func TestBuildConfigFromOCIMetadata_NoWorkDir(t *testing.T) {
+	// Without a workDir (fast metadata phase), relative paths stay relative.
+	metadata := &OCIMetadataConfig{
+		Payload: &TaskPayloadConfig{Kernel: "vmlinuz"},
+		Disk:    []TaskDiskConfig{{Path: "rootfs.raw", ImageType: "raw"}},
 	}
-	applyOCIArtifact(&cfg, dir, hclog.NewNullLogger())
 
-	must.Eq(t, filepath.Join(dir, "vmlinuz"), cfg.Payload.Kernel)
-	must.Eq(t, filepath.Join(dir, "initrd.img"), cfg.Payload.Initramfs)
-	must.SliceLen(t, 1, cfg.Disk)
-	must.Eq(t, filepath.Join(dir, "rootfs.raw"), cfg.Disk[0].Path)
-	must.Eq(t, "raw", cfg.Disk[0].ImageType)
+	cfg := buildConfigFromOCIMetadata(metadata, "", hclog.NewNullLogger())
+
+	must.Eq(t, "vmlinuz", cfg.Payload.Kernel)
+	must.Eq(t, "rootfs.raw", cfg.Disk[0].Path)
 }
 
-func TestApplyOCIArtifact_NoMetadata(t *testing.T) {
-	dir := t.TempDir()
-	must.NoError(t, os.WriteFile(filepath.Join(dir, "vmlinuz"), []byte("kernel"), 0o644))
-	must.NoError(t, os.WriteFile(filepath.Join(dir, "initrd.img"), []byte("initramfs"), 0o644))
-	must.NoError(t, os.WriteFile(filepath.Join(dir, "rootfs.qcow2"), []byte("rootfs"), 0o644))
+func TestBuildConfigFromOCIMetadata_AbsolutePathsUnchanged(t *testing.T) {
+	// Absolute paths in metadata are left unchanged even when workDir is set.
+	metadata := &OCIMetadataConfig{
+		Payload: &TaskPayloadConfig{Kernel: "/boot/vmlinuz"},
+		Disk:    []TaskDiskConfig{{Path: "/data/rootfs.raw", ImageType: "raw"}},
+	}
 
-	cfg := TaskConfig{}
-	applyOCIArtifact(&cfg, dir, hclog.NewNullLogger())
+	cfg := buildConfigFromOCIMetadata(metadata, "/some/workdir", hclog.NewNullLogger())
 
-	must.Eq(t, filepath.Join(dir, "vmlinuz"), cfg.Payload.Kernel)
-	must.Eq(t, filepath.Join(dir, "initrd.img"), cfg.Payload.Initramfs)
-	must.SliceLen(t, 1, cfg.Disk)
-	must.Eq(t, filepath.Join(dir, "rootfs.qcow2"), cfg.Disk[0].Path)
-	must.Eq(t, "qcow2", cfg.Disk[0].ImageType)
+	must.Eq(t, "/boot/vmlinuz", cfg.Payload.Kernel)
+	must.Eq(t, "/data/rootfs.raw", cfg.Disk[0].Path)
 }
 
 func TestApplyJobConfig(t *testing.T) {

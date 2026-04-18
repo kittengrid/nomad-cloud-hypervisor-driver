@@ -130,7 +130,7 @@ func collectFiles(t *testing.T, root string) map[string][]byte {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
+		if d.IsDir() || d.Name() == ".complete" {
 			return nil
 		}
 		rel, err := filepath.Rel(root, path)

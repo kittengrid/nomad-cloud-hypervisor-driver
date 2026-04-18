@@ -61,19 +61,6 @@ var (
 	// on the client.
 	// this is not global, but can be specified on a per-client basis.
 	configSpec = hclspec.NewObject(map[string]*hclspec.Spec{
-		// TODO: define plugin's agent configuration schema.
-		//
-		// The schema should be defined using HCL specs and it will be used to
-		// validate the agent configuration provided by the user in the
-		// `plugin` stanza (https://www.nomadproject.io/docs/configuration/plugin.html).
-		//
-		// For example, for the schema below a valid configuration would be:
-		//
-		//   plugin "cloud-hypervisor" {
-		//     config {
-		//       shell = "fish"
-		//     }
-		//   }
 		"cloud-hypervisor-binary-path": hclspec.NewDefault(
 			hclspec.NewAttr("cloud-hypervisor-binary-path", "string", false),
 			hclspec.NewLiteral(`"/usr/bin/cloud-hypervisor"`),
@@ -147,11 +134,6 @@ type AuthConfig struct {
 
 // Config contains configuration information for the plugin
 type Config struct {
-	// TODO: create decoded plugin configuration struct
-	//
-	// This struct is the decoded version of the schema defined in the
-	// configSpec variable above. It's used to convert the HCL configuration
-	// passed by the Nomad agent into Go contructs.
 	CloudHypervisorBinaryPath string      `codec:"cloud-hypervisor-binary-path"`
 	CloudHypervisorSocketDir  string      `codec:"cloud-hypervisor-socket-dir"`
 	CacheDir                  string      `codec:"cache-dir"`
@@ -405,6 +387,10 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 		return nil, nil, fmt.Errorf("failed to decode driver config: %v", err)
 	}
 
+	// Snapshot the raw job config before OCI metadata is merged in so that
+	// materializeOCIPayload can apply the job's explicit overrides correctly.
+	jobConfig := driverConfig
+
 	if err := resolveOCIPayload(d.ctx, &driverConfig, d.config.CacheDir, d.dockerConfigPath(), d.logger); err != nil {
 		return nil, nil, fmt.Errorf("resolve OCI payload: %v", err)
 	}
@@ -464,7 +450,7 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 		})
 	}
 
-	if err := materializeOCIPayload(d.ctx, &driverConfig, d.config.CacheDir, d.dockerConfigPath(), d.logger, progress); err != nil {
+	if err := materializeOCIPayload(d.ctx, &driverConfig, &jobConfig, d.config.CacheDir, d.dockerConfigPath(), d.logger, progress); err != nil {
 		return nil, nil, fmt.Errorf("materialize OCI payload: %v", err)
 	}
 
