@@ -89,6 +89,8 @@ func parseOCIMetadata(data []byte, logger hclog.Logger) (*OCIMetadataConfig, err
 	if err := json.Unmarshal(data, &metadata); err != nil {
 		return nil, err
 	}
+	logger.Info("Parsed OCI metadata", metadata)
+
 	return metadata.Config, nil
 }
 
@@ -96,12 +98,16 @@ func parseOCIMetadata(data []byte, logger hclog.Logger) (*OCIMetadataConfig, err
 // workDir is used to resolve relative paths from the metadata; pass "" when
 // the artifact has not been materialized yet (paths will remain relative).
 func buildConfigFromOCIMetadata(metadata *OCIMetadataConfig, workDir string, logger hclog.Logger) TaskConfig {
+	logger.Info("Building TaskConfig from OCI metadata", "work_dir", workDir)
+	logger.Debug("OCI metadata content", "metadata", metadata)
+
 	cfg := TaskConfig{}
 	if metadata == nil {
 		return cfg
 	}
 
 	if metadata.Payload != nil {
+		cfg.Payload = TaskPayloadConfig{}
 		cfg.Payload.Kernel = resolvePath(workDir, metadata.Payload.Kernel)
 		cfg.Payload.Initramfs = resolvePath(workDir, metadata.Payload.Initramfs)
 		cfg.Payload.Cmdline = metadata.Payload.Cmdline
@@ -119,6 +125,7 @@ func buildConfigFromOCIMetadata(metadata *OCIMetadataConfig, workDir string, log
 	if metadata.Console != nil {
 		cfg.Console.Mode = metadata.Console.Mode
 	}
+
 	cfg.Network = metadata.Network
 	cfg.CloudInit = metadata.CloudInit
 	cfg.Serial = metadata.Serial

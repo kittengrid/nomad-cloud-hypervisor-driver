@@ -4,9 +4,9 @@
 package chdriver
 
 import (
+	"context"
 	"strconv"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/hashicorp/go-hclog"
@@ -59,23 +59,23 @@ func (h *taskHandle) IsRunning() bool {
 	return h.procState == drivers.TaskStateRunning
 }
 
-// run polls the cloud-hypervisor process until it exits, then updates state and
-// closes doneCh. Using syscall.Kill(pid, 0) works both for processes we spawned
-// and for processes we re-attached to after a driver restart.
+// run blocks on the executor until cloud-hypervisor exits, then records the
+// real exit code/signal and closes doneCh to unblock WaitTask callers.
 func (h *taskHandle) run() {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+	ps, err := h.exec.Wait(context.Background())
 
-	for range ticker.C {
-		if err := syscall.Kill(h.pid, syscall.Signal(0)); err != nil {
-			// ESRCH means the process no longer exists.
-			h.stateLock.Lock()
-			h.procState = drivers.TaskStateExited
-			h.exitResult = &drivers.ExitResult{ExitCode: 0}
-			h.completedAt = time.Now()
-			h.stateLock.Unlock()
-			close(h.doneCh)
-			return
+	h.stateLock.Lock()
+	h.procState = drivers.TaskStateExited
+	h.completedAt = time.Now()
+	if err != nil {
+		h.exitResult = &drivers.ExitResult{Err: err}
+	} else {
+		h.exitResult = &drivers.ExitResult{
+			ExitCode:  ps.ExitCode,
+			Signal:    ps.Signal,
+			OOMKilled: ps.OOMKilled,
 		}
 	}
+	h.stateLock.Unlock()
+	close(h.doneCh)
 }

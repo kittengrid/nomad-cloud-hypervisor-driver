@@ -21,6 +21,15 @@ type CloudHypervisorProcess struct {
 	exec           executor.Executor
 }
 
+const (
+	// Cloud-hypervisor memory overhead reserved from the cgroup limit.
+	// Covers VMM baseline, virtio queues, qcow2 L2 cache, tap buffers, etc.
+	chMemoryOverheadBytes = 512 * 1024 * 1024 // 512 MiB
+
+	// Don't run a guest smaller than this.
+	chMinGuestMemoryBytes = 256 * 1024 * 1024 // 256 MiB
+)
+
 // startCloudHypervisor launches cloud-hypervisor as an independent process.
 // Using Setsid the child becomes a session leader so it survives driver restarts —
 // when the driver process dies the child is re-parented to init rather than killed.
@@ -139,7 +148,15 @@ func buildCHArgs(cfg TaskConfig, resources *drivers.Resources, socketBasePath st
 	args = append(args, "--cpus", fmt.Sprintf("boot=%d", vcpus))
 
 	if memBytes := memoryBytesFromResources(resources); memBytes > 0 {
-		args = append(args, "--memory", fmt.Sprintf("size=%d", memBytes))
+		guestBytes := memBytes - chMemoryOverheadBytes
+		if guestBytes < chMinGuestMemoryBytes {
+			return nil, fmt.Errorf(
+				"task memory %d bytes too small for cloud-hypervisor: need at least %d (overhead %d + min guest %d)",
+				memBytes, chMemoryOverheadBytes+chMinGuestMemoryBytes,
+				chMemoryOverheadBytes, chMinGuestMemoryBytes,
+			)
+		}
+		args = append(args, "--memory", fmt.Sprintf("size=%d", guestBytes))
 	}
 
 	if cfg.Console.Mode != "" {
