@@ -11,12 +11,13 @@ server {
 client {
   enabled = true
 }
+data_dir = "/var/lib/vms"
 
 plugin "cloud-hypervisor-driver" {
   config {
     cloud-hypervisor-binary-path = "/usr/bin/cloud-hypervisor"
     cloud-hypervisor-socket-dir  = "/tmp/nomad-ch"
-    cache-dir                    = "/tmp/nomad-ch-cache"
+    cache-dir                    = "/var/lib/vms"
   }
 }
 

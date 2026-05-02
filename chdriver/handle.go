@@ -68,8 +68,19 @@ func (h *taskHandle) run() {
 	h.procState = drivers.TaskStateExited
 	h.completedAt = time.Now()
 	if err != nil {
+		h.logger.Error("cloud-hypervisor exited with error", "error", err)
 		h.exitResult = &drivers.ExitResult{Err: err}
 	} else {
+		h.logger.Info("cloud-hypervisor exited",
+			"exit_code", ps.ExitCode,
+			"signal", ps.Signal,
+			"oom_killed", ps.OOMKilled,
+		)
+		if ps.OOMKilled {
+			h.logger.Error("cloud-hypervisor was OOM-killed by the host cgroup — VMM overhead exceeds reserved headroom; increase chMemoryOverheadBytes or Nomad memory allocation")
+		} else if ps.Signal == 9 {
+			h.logger.Warn("cloud-hypervisor was killed with SIGKILL — may indicate host memory pressure")
+		}
 		h.exitResult = &drivers.ExitResult{
 			ExitCode:  ps.ExitCode,
 			Signal:    ps.Signal,

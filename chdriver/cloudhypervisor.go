@@ -23,7 +23,9 @@ type CloudHypervisorProcess struct {
 
 const (
 	// Cloud-hypervisor memory overhead reserved from the cgroup limit.
-	// Covers VMM baseline, virtio queues, qcow2 L2 cache, tap buffers, etc.
+	// Covers VMM baseline, virtio queues, tap buffers, etc.
+	// Ephemeral overlay disks use direct=on to bypass the host page cache,
+	// so no extra headroom is needed for qcow2 image caching.
 	chMemoryOverheadBytes = 512 * 1024 * 1024 // 512 MiB
 
 	// Don't run a guest smaller than this.
@@ -111,7 +113,11 @@ func buildCHArgs(cfg TaskConfig, resources *drivers.Resources, socketBasePath st
 			diskArgEntry += ",readonly=on"
 		}
 		if disk.EphemeralOverlay {
-			diskArgEntry += ",backing_files=on"
+			// backing_files=on enables the qcow2 backing file chain.
+			// direct=on bypasses the host page cache for reads that fall
+			// through to the base image, preventing the host cgroup from
+			// being exhausted by cached pages of a large base image.
+			diskArgEntry += ",backing_files=on,direct=on"
 		}
 		diskArgs = append(diskArgs, diskArgEntry)
 	}
