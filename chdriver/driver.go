@@ -153,6 +153,11 @@ type TaskDiskConfig struct {
 	ImageType        string `codec:"image_type"        json:"image_type,omitempty"`
 	Readonly         bool   `codec:"readonly"          json:"readonly"`
 	EphemeralOverlay bool   `codec:"ephemeral_overlay" json:"ephemeral_overlay"`
+	// ReflinkCopy is set by the driver (not user-configurable) when the
+	// ephemeral overlay was created via XFS reflink rather than a qcow2
+	// backing-file chain. It changes the cloud-hypervisor disk arguments:
+	// no backing_files=on, and direct=on is safe to use.
+	ReflinkCopy bool `codec:"-" json:"-"`
 }
 
 // TaskConsoleConfig corresponds to ConsoleConfig in chtypes (required fields only).
@@ -458,12 +463,26 @@ func (d *CloudHypervisorDriverPlugin) StartTask(cfg *drivers.TaskConfig) (*drive
 	for i, disk := range driverConfig.Disk {
 		if disk.EphemeralOverlay {
 			overlayPath := filepath.Join(cfg.TaskDir().LocalDir, fmt.Sprintf("overlay-%d.img", i))
-			if err := NewOverlayDiskFromDiskConfig(disk, overlayPath).Create(); err != nil {
+
+			useReflink, err := isSameXFSPartition(disk.Path, cfg.TaskDir().LocalDir)
+			if err != nil {
+				d.logger.Warn("could not detect filesystem for overlay, falling back to qcow2 backing file", "error", err)
+				useReflink = false
+			}
+			if useReflink {
+				d.logger.Info("using XFS reflink for ephemeral overlay", "base", disk.Path, "overlay", overlayPath)
+			} else {
+				d.logger.Info("using qcow2 backing file for ephemeral overlay", "base", disk.Path, "overlay", overlayPath)
+			}
+
+			if err := NewOverlayDiskFromDiskConfig(disk, overlayPath, useReflink).Create(); err != nil {
 				return nil, nil, fmt.Errorf("failed to create ephemeral overlay: %v", err)
 			}
-			// Update the disk path to point to the overlay, which is what startCloudHypervisor will use.
 			driverConfig.Disk[i].Path = overlayPath
-			driverConfig.Disk[i].ImageType = "qcow2"
+			driverConfig.Disk[i].ReflinkCopy = useReflink
+			if !useReflink {
+				driverConfig.Disk[i].ImageType = "qcow2"
+			}
 		}
 	}
 

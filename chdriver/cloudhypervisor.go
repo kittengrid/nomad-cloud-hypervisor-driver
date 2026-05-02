@@ -113,11 +113,15 @@ func buildCHArgs(cfg TaskConfig, resources *drivers.Resources, socketBasePath st
 			diskArgEntry += ",readonly=on"
 		}
 		if disk.EphemeralOverlay {
-			// backing_files=on enables the qcow2 backing file chain.
-			// direct=on bypasses the host page cache for reads that fall
-			// through to the base image, preventing the host cgroup from
-			// being exhausted by cached pages of a large base image.
-			diskArgEntry += ",backing_files=on,direct=on"
+			if disk.ReflinkCopy {
+				// Standalone copy — no backing file chain, so direct=on
+				// fully bypasses the host page cache for the entire image.
+				diskArgEntry += ",direct=on"
+			} else {
+				// qcow2 backing-file chain: direct=on only applies to the
+				// overlay, not the backing file, so we skip it.
+				diskArgEntry += ",backing_files=on"
+			}
 		}
 		diskArgs = append(diskArgs, diskArgEntry)
 	}
