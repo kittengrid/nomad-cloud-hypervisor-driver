@@ -112,6 +112,24 @@ var (
 			"meta-data": hclspec.NewAttr("meta-data", "string", false),
 		})),
 		"serial": hclspec.NewAttr("serial", "string", false),
+		"balloon": hclspec.NewBlock("balloon", false, hclspec.NewObject(map[string]*hclspec.Spec{
+			"enabled": hclspec.NewDefault(
+				hclspec.NewAttr("enabled", "bool", false),
+				hclspec.NewLiteral("true"),
+			),
+			"size": hclspec.NewDefault(
+				hclspec.NewAttr("size", "string", false),
+				hclspec.NewLiteral(`"0"`),
+			),
+			"deflate_on_oom": hclspec.NewDefault(
+				hclspec.NewAttr("deflate_on_oom", "bool", false),
+				hclspec.NewLiteral("true"),
+			),
+			"free_page_reporting": hclspec.NewDefault(
+				hclspec.NewAttr("free_page_reporting", "bool", false),
+				hclspec.NewLiteral("true"),
+			),
+		})),
 	})
 
 	// capabilities indicates what optional features this driver supports
@@ -177,6 +195,14 @@ type CloudInit struct {
 	MetaData string `codec:"meta-data" json:"meta-data,omitempty"`
 }
 
+// TaskBalloonConfig configures the virtio-balloon device.
+type TaskBalloonConfig struct {
+	Enabled           bool   `codec:"enabled"`
+	Size              string `codec:"size"`
+	DeflateOnOOM      bool   `codec:"deflate_on_oom"`
+	FreePageReporting bool   `codec:"free_page_reporting"`
+}
+
 // TaskConfig contains configuration information for a task that runs with
 // this plugin
 type TaskConfig struct {
@@ -187,6 +213,7 @@ type TaskConfig struct {
 	CloudInit *CloudInit          `codec:"cloud-init"`
 	OCIImage  string              `codec:"oci_image"`
 	Serial    string              `codec:"serial"`
+	Balloon   *TaskBalloonConfig  `codec:"balloon"`
 }
 
 // TaskState is the runtime state which is encoded in the handle returned to

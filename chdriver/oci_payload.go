@@ -194,6 +194,10 @@ func applyJobConfig(base TaskConfig, job *TaskConfig, logger hclog.Logger) TaskC
 		base.Serial = job.Serial
 		logger.Info("job config override", "field", "serial", "value", job.Serial)
 	}
+	if job.Balloon != nil {
+		base.Balloon = job.Balloon
+		logger.Info("job config override", "field", "balloon")
+	}
 	return base
 }
 

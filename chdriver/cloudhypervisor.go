@@ -173,7 +173,30 @@ func buildCHArgs(cfg TaskConfig, resources *drivers.Resources, socketBasePath st
 		args = append(args, "--console", cfg.Console.Mode)
 	}
 
+	balloon := cfg.Balloon
+	if balloon == nil {
+		balloon = &TaskBalloonConfig{
+			Enabled:           true,
+			Size:              "0",
+			DeflateOnOOM:      true,
+			FreePageReporting: true,
+		}
+	}
+	if balloon.Enabled {
+		deflate := boolToOnOff(balloon.DeflateOnOOM)
+		fpr := boolToOnOff(balloon.FreePageReporting)
+		args = append(args, "--balloon", fmt.Sprintf("size=%s,deflate_on_oom=%s,free_page_reporting=%s",
+			balloon.Size, deflate, fpr))
+	}
+
 	return args, nil
+}
+
+func boolToOnOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }
 
 // vcpusFromResources derives the vCPU count to pass to cloud-hypervisor.
